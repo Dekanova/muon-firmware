@@ -49,6 +49,8 @@ If you aren't using a debugger, check out [alternative runners](#alternative-run
 
 </details>
 
+https://embedded-trainings.ferrous-systems.com/installation.html?highlight=udev#linux-only-usb
+
 <!-- Installation of development dependencies -->
 <details open="open">
   <summary><h2 style="display: inline-block" id="installation-of-development-dependencies">Installation of development dependencies</h2></summary>
