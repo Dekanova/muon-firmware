@@ -1,0 +1,103 @@
+<svg viewBox="0 -20 300 140" xmlns="http://www.w3.org/2000/svg">
+<g transform="scale(1, 1)">
+<g fill="CornflowerBlue">
+<rect height="0.0015257858" width="50" x="50" y="0.00457773"/>
+<text fill="Black" font-family="Arial" font-size="5" x="51" y="-1.9938965">
+0x10000000
+</text>
+<text fill="Black" font-family="Arial" font-size="5" x="51" y="5.0045776">
+0x10001000
+</text>
+</g>
+<g fill="CornflowerBlue">
+<rect height="0.0015257858" width="50" x="50" y="0.003051851"/>
+<text fill="Black" font-family="Arial" font-size="5" x="51" y="-1.9954224">
+0x10001000
+</text>
+<text fill="Black" font-family="Arial" font-size="5" x="51" y="5.0030518">
+0x10002000
+</text>
+</g>
+<g fill="CornflowerBlue">
+<rect height="0.0015257858" width="50" x="50" y="0.001525972"/>
+<text fill="Black" font-family="Arial" font-size="5" x="51" y="-1.9969482">
+0x10002000
+</text>
+<text fill="Black" font-family="Arial" font-size="5" x="51" y="5.001526">
+0x10003000
+</text>
+</g>
+<g fill="CornflowerBlue">
+<rect height="0.0015257858" width="50" x="50" y="0.00000009313226"/>
+<text fill="Black" font-family="Arial" font-size="5" x="51" y="-1.9984741">
+0x10003000
+</text>
+<text fill="Black" font-family="Arial" font-size="5" x="51" y="5">
+0x10004000
+</text>
+</g>
+<g fill="Crimson">
+<rect height="0.0015257858" width="50" x="100" y="0.00457773"/>
+<text fill="Black" font-family="Arial" font-size="5" x="101" y="-1.9938965">
+0x10000000
+</text>
+<text fill="Black" font-family="Arial" font-size="5" x="101" y="5.0045776">
+0x10001000
+</text>
+</g>
+<g fill="Crimson">
+<rect height="0.0015257858" width="50" x="100" y="0.003051851"/>
+<text fill="Black" font-family="Arial" font-size="5" x="101" y="-1.9954224">
+0x10001000
+</text>
+<text fill="Black" font-family="Arial" font-size="5" x="101" y="5.0030518">
+0x10002000
+</text>
+</g>
+<g fill="Crimson">
+<rect height="0.0015257858" width="50" x="100" y="0.001525972"/>
+<text fill="Black" font-family="Arial" font-size="5" x="101" y="-1.9969482">
+0x10002000
+</text>
+<text fill="Black" font-family="Arial" font-size="5" x="101" y="5.001526">
+0x10003000
+</text>
+</g>
+<g fill="Crimson">
+<rect height="0.0015257858" width="50" x="100" y="0.00000009313226"/>
+<text fill="Black" font-family="Arial" font-size="5" x="101" y="-1.9984741">
+0x10003000
+</text>
+<text fill="Black" font-family="Arial" font-size="5" x="101" y="5">
+0x10004000
+</text>
+</g>
+<g fill="MediumSeaGreen">
+<rect height="0.00009536161" width="50" x="150" y="0.006008154"/>
+<text fill="Black" font-family="Arial" font-size="5" x="151" y="-1.9938965">
+0x10000000
+</text>
+<text fill="Black" font-family="Arial" font-size="5" x="151" y="5.006008">
+0x10000100
+</text>
+</g>
+<g fill="MediumSeaGreen">
+<rect height="0.005381971" width="50" x="150" y="0.00062999176"/>
+<text fill="Black" font-family="Arial" font-size="5" x="151" y="-1.993988">
+0x10000100
+</text>
+<text fill="Black" font-family="Arial" font-size="5" x="151" y="5.00063">
+0x10003970
+</text>
+</g>
+<g fill="SandyBrown">
+<rect height="0.0006258106" width="50" x="150" y="-0.000007829629"/>
+<text fill="Black" font-family="Arial" font-size="5" x="151" y="-1.999382">
+0x10003970
+</text>
+<text fill="Black" font-family="Arial" font-size="5" x="151" y="4.9999924">
+0x10004000
+</text>
+</g>
+</g>
+</svg>

@@ -17,7 +17,7 @@ enabled = true
 # should be restored with their contents before erasing.
 restore_unwritten_bytes = false
 # The path where an SVG of the assembled flash layout should be written to.
-# flash_layout_output_path = "out.svg"
+flash_layout_output_path = "layout.svg"
 # Triggers a full chip erase instead of a page by page erase.
 do_chip_erase = false
 
@@ -37,7 +37,7 @@ chip_descriptions = []
 #   "OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"
 log_level = "INFO"
 # Use this flag to assert the nreset & ntrst pins during attaching the probe to the chip.
-connect_under_reset = true
+connect_under_reset = false
 
 [default.rtt]
 # Whether or not an RTTUI should be opened after flashing.
