@@ -5,6 +5,7 @@
 #![no_main]
 
 use defmt_rtt as _;
+use embedded_time::duration::Microseconds;
 use panic_probe as _;
 
 use rp2040_hal as hal;
@@ -13,58 +14,13 @@ use rp2040_hal as hal;
 #[used]
 pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_RAM_MEMCPY;
 
-// #[entry]
-// fn main() -> ! {
-//     info!("Program start");
-//     let mut pac = pac::Peripherals::take().unwrap();
-//     let core = pac::CorePeripherals::take().unwrap();
-//     let mut watchdog = Watchdog::new(pac.WATCHDOG);
-//     let sio = Sio::new(pac.SIO);
-
-//     // External high-speed crystal on the pico board is 12Mhz
-//     let external_xtal_freq_hz = 12_000_000u32;
-//     let clocks = init_clocks_and_plls(
-//         external_xtal_freq_hz,
-//         pac.XOSC,
-//         pac.CLOCKS,
-//         pac.PLL_SYS,
-//         pac.PLL_USB,
-//         &mut pac.RESETS,
-//         &mut watchdog,
-//     )
-//     .ok()
-//     .unwrap();
-
-//     let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().integer());
-
-//     let pins = bsp::Pins::new(
-//         pac.IO_BANK0,
-//         pac.PADS_BANK0,
-//         sio.gpio_bank0,
-//         &mut pac.RESETS,
-//     );
-
-//     let mut led_pin = pins.led.into_push_pull_output();
-
-//     loop {
-//         info!("on!");
-//         led_pin.set_high().unwrap();
-//         delay.delay_ms(500);
-//         info!("off!");
-//         led_pin.set_low().unwrap();
-//         delay.delay_ms(500);
-//     }
-// }
-
 // https://crates.io/crates/switch-hal
 
 #[rtic::app(device = crate::hal::pac, peripherals = true, dispatchers = [PIO0_IRQ_0, PIO0_IRQ_1, PIO1_IRQ_0])]
 mod app {
-    use crate::hal;
-
-    use cortex_m::prelude::{
-        _embedded_hal_watchdog_Watchdog, _embedded_hal_watchdog_WatchdogEnable,
-    };
+    use crate::{hal, StaticCountDown};
+    use hal::gpio::bank0::Gpio12;
+    use hal::prelude::*;
 
     use embedded_hal::digital::v2::{InputPin, OutputPin};
 
@@ -76,13 +32,15 @@ mod app {
         sio::Sio,
         watchdog::Watchdog,
     };
+    use smart_leds::{brightness, SmartLedsWrite, RGB8};
+    use ws2812_pio::Ws2812;
 
     const TIMER_INTERVAL: u32 = 1000;
 
     #[shared]
     struct Shared {
-        timer: hal::timer::Timer,
         alarm: hal::timer::Alarm0,
+        ws: Ws2812<hal::pac::PIO0, hal::pio::SM0, StaticCountDown, Gpio12>,
     }
 
     #[local]
@@ -129,19 +87,106 @@ mod app {
         let pixel_power = pins.gpio11;
         let pixel_data = pins.gpio12;
 
+        let (mut pio, sm0, _, _, _) = hal::pio::PIOExt::split(ctx.device.PIO0, &mut resets);
+
+        let mut ws = Ws2812::new(
+            pixel_data.into_mode(),
+            &mut pio,
+            sm0,
+            clocks.peripheral_clock.freq(),
+            StaticCountDown::empty(),
+        );
+
+        let mut n: u8 = 128;
+
         // watchdog with low priority of 1kHz
-        watchdog.start(10_000.microseconds());
+        cortex_m::prelude::_embedded_hal_watchdog_WatchdogEnable::start(
+            &mut watchdog,
+            10_000.microseconds(),
+        );
 
-        (Shared { timer, alarm }, Local {}, init::Monotonics())
+        (Shared { alarm, ws }, Local {}, init::Monotonics())
     }
 
-    #[idle()]
-    fn idle(_ctx: idle::Context) -> ! {
-        loop {
-            cortex_m::asm::wfe();
-        }
-    }
+    // #[idle(shared = [ws])]
+    // fn idle(_ctx: idle::Context) -> ! {
+    //     loop {
+    //         // cortex_m::asm::wfe();
+    //         ws.write(brightness(once(wheel(n)), 32)).unwrap();
+    //         n = n.wrapping_add(1);
+
+    //         delay.start(25.milliseconds());
+    //         let _ = nb::block!(delay.wait());
+    //     }
+    // }
 
     #[task(shared = [], local=[counter: u8 = 0, prev: u8 = 0], priority = 1)]
     fn blink(mut ctx: blink::Context) {}
+
+    /// Convert a number from `0..=255` to an RGB color triplet.
+    ///
+    /// The colours are a transition from red, to green, to blue and back to red.
+    fn wheel(mut wheel_pos: u8) -> RGB8 {
+        wheel_pos = 255 - wheel_pos;
+        if wheel_pos < 85 {
+            // No green in this sector - red and blue only
+            (255 - (wheel_pos * 3), 0, wheel_pos * 3).into()
+        } else if wheel_pos < 170 {
+            // No red in this sector - green and blue only
+            wheel_pos -= 85;
+            (0, wheel_pos * 3, 255 - (wheel_pos * 3)).into()
+        } else {
+            // No blue in this sector - red and green only
+            wheel_pos -= 170;
+            (wheel_pos * 3, 255 - (wheel_pos * 3), 0).into()
+        }
+    }
+}
+
+/// Delay implementation that waits for a 'static lifetime
+pub struct StaticCountDown {
+    timer: Option<&'static hal::Timer>,
+    period: embedded_time::duration::Microseconds<u64>,
+    next_end: Option<u64>,
+}
+
+impl StaticCountDown {
+    fn empty() -> Self {
+        Self {
+            timer: None,
+            period: Microseconds::new(0),
+            next_end: None,
+        }
+    }
+}
+
+impl embedded_hal::timer::CountDown for StaticCountDown {
+    type Time = embedded_time::duration::Microseconds<u64>;
+
+    fn start<T>(&mut self, count: T)
+    where
+        T: Into<Self::Time>,
+    {
+        self.period = count.into();
+        self.next_end = Some(
+            self.timer
+                .unwrap()
+                .get_counter()
+                .wrapping_add(self.period.0),
+        );
+    }
+
+    fn wait(&mut self) -> nb::Result<(), void::Void> {
+        if let Some(end) = self.next_end {
+            let ts = self.timer.unwrap().get_counter();
+            if ts >= end {
+                self.next_end = Some(end.wrapping_add(self.period.0));
+                Ok(())
+            } else {
+                Err(nb::Error::WouldBlock)
+            }
+        } else {
+            panic!("CountDown is not running!");
+        }
+    }
 }
