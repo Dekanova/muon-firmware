@@ -10,7 +10,7 @@ use keyberon::matrix::Matrix;
 pub struct DummyPin;
 
 impl OutputPin for DummyPin {
-    type Error = ();
+    type Error = rp2040_hal::gpio::Error;
 
     fn set_low(&mut self) -> Result<(), Self::Error> {
         Ok(())

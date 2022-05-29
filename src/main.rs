@@ -19,13 +19,13 @@ mod kb;
 // TODO https://crates.io/crates/switch-hal
 #[rtic::app(device = crate::hal::pac, peripherals = true, dispatchers = [PIO0_IRQ_0, PIO0_IRQ_1])] // extra PIO0_IRQ_1, PIO1_IRQ_0
 mod app {
-    use crate::hal;
+    use crate::{hal, kb::DummyPin};
     use cortex_m::prelude::*;
     // use hal::prelude::*;
     use defmt::*;
     use hal::{
         clocks::{init_clocks_and_plls, Clock},
-        gpio::*,
+        gpio::{AnyPin, *},
         pac,
         sio::Sio,
         timer::Timer,
@@ -42,7 +42,13 @@ mod app {
     use smart_leds::{brightness, SmartLedsWrite, RGB8};
     use ws2812_pio::Ws2812Direct as Ws2812;
 
-    use keyberon::{debounce::Debouncer, hid::HidClass, matrix::Matrix};
+    use keyberon::{
+        debounce::Debouncer,
+        hid::HidClass,
+        key_code::*,
+        layout::{Event, *},
+        matrix::Matrix,
+    };
 
     const TIMER_INTERVAL: u32 = 1000;
 
@@ -62,6 +68,8 @@ mod app {
         usb_class: keyberon::Class<'static, UsbBus, crate::kb::Leds>,
         // #[lock_free]
         // debouncer: Debouncer<PressedKeys<16, 5>>,
+        matrix: Matrix<DynPin, DummyPin, 2, 1>,
+        layout: Layout<2, 1, 1>,
     }
 
     #[local]
@@ -69,7 +77,7 @@ mod app {
         debug_led: Pin<bank0::Gpio25, Output<PushPull>>,
     }
 
-    #[init(local = [TIMER: Option<hal::timer::Timer> = None, USB: Option<UsbBusAllocator<UsbBus>> = None])]
+    #[init(local = [TIMER: Option<hal::timer::Timer> = None, USB: Option<UsbBusAllocator<UsbBus>> = None,])]
     fn init(ctx: init::Context) -> (Shared, Local, init::Monotonics) {
         info!("init start");
         let mut resets = ctx.device.RESETS;
@@ -105,16 +113,29 @@ mod app {
         );
 
         // Matric whoOhhoH -------------
-        // Matrix::new();
+        // TODO maybe print err to defmt
+        // TODO add `DynPin` to keyberon docs
+        let matrix = Matrix::new(
+            [
+                pins.gpio27.into_pull_up_input().into(),
+                pins.gpio26.into_pull_up_input().into(),
+            ],
+            [crate::kb::DummyPin],
+        )
+        .unwrap();
+
+        // single layer for now
+        const LAYERS: Layers<2, 1, 1> = layout! {{[Z X]}};
+        let layout = Layout::new(&LAYERS);
 
         // gpio2.into_pull_up_input().into();
 
         // Debug LEDs
         // let green = pins.gpio16.into_readable_output();
         // let red = pins.gpio17.into_readable_output();
-        let mut blue = pins.gpio25.into_push_pull_output();
+        let blue = pins.gpio25.into_push_pull_output();
 
-        // // neopixel
+        // neopixel
         let mut pixel_power = pins.gpio11.into_push_pull_output();
 
         pixel_power.set_high();
@@ -143,7 +164,7 @@ mod app {
         let usb_class = keyberon::new_class(usb_bus, crate::kb::Leds);
         let usb_dev = keyberon::new_device(usb_bus);
 
-        tick::spawn().ok(); // TODO for debug, remove
+        // tick::spawn().ok(); // TODO for debug, remove
         led_color_wheel::spawn().ok();
 
         let mono = Systick::new(ctx.core.SYST, clocks.system_clock.freq().0);
@@ -159,27 +180,30 @@ mod app {
         info!("init finished");
         (
             Shared {
+                timer,
                 usb_dev,
                 usb_class,
-                timer,
+                matrix,
                 ws,
+                layout,
             },
             Local { debug_led: blue },
             init::Monotonics(mono),
         )
     }
 
+    // idle blinky to know we are running
     #[idle(shared = [timer], local = [debug_led])]
     fn idle(ctx: idle::Context) -> ! {
         let mut delay = ctx.shared.timer.count_down();
         let debug_led = ctx.local.debug_led;
         loop {
-            info!("on!");
+            // info!("on!");
             debug_led.set_high().unwrap();
             delay.start(1.seconds());
             nb::block!(delay.wait()).ok();
 
-            info!("off!");
+            // info!("off!");
             delay.start(1.seconds());
             debug_led.set_low().unwrap();
             nb::block!(delay.wait()).ok();
@@ -196,51 +220,45 @@ mod app {
             }
         });
     }
-    // #[task(priority = 2, capacity = 8, shared = [usb_dev, usb_class])]
-    // fn handle_event(mut c: handle_event::Context, event: Option<Event>) {
-    //     let mut layout = c.shared.layout;
-    //     match event {
-    //         None => match layout.lock(|l| l.tick()) {
-    //             CustomEvent::Press(event) => match event {
-    //                 kb_layout::CustomActions::Underglow => {
-    //                     handle_underglow::spawn().unwrap();
-    //                 }
-    //                 kb_layout::CustomActions::Bootloader => {
-    //                     rp2040_hal::rom_data::reset_to_usb_boot(0, 0);
-    //                 }
-    //                 kb_layout::CustomActions::Display => {
-    //                     handle_display::spawn().unwrap();
-    //                 }
-    //             },
-    //             _ => (),
-    //         },
-    //         Some(e) => {
-    //             layout.lock(|l| l.event(e));
-    //             return;
-    //         }
-    //     }
+    #[task(priority = 2, capacity = 8, shared = [usb_dev, usb_class, layout])]
+    fn handle_event(mut c: handle_event::Context, event: Option<Event>) {
+        info!("got event");
 
-    //     let report: key_code::KbHidReport = layout.lock(|l| l.keycodes().collect());
-    //     if !c
-    //         .shared
-    //         .usb_class
-    //         .lock(|k| k.device_mut().set_keyboard_report(report.clone()))
-    //     {
-    //         return;
-    //     }
-    //     if c.shared.usb_dev.lock(|d| d.state()) != UsbDeviceState::Configured {
-    //         return;
-    //     }
-    //     while let Ok(0) = c.shared.usb_class.lock(|k| k.write(report.as_bytes())) {}
-    // }
+        let mut layout = c.shared.layout;
+        match event {
+            Some(e) => {
+                match &e {
+                    Event::Press(k, _) => info!("pressed key {}", k),
+                    Event::Release(k, _) => info!("released key {}", k),
+                }
+
+                layout.lock(|l| l.event(e));
+                return;
+            }
+            _ => (),
+        }
+
+        let report: KbHidReport = layout.lock(|l| l.keycodes().collect());
+        if !c
+            .shared
+            .usb_class
+            .lock(|k| k.device_mut().set_keyboard_report(report.clone()))
+        {
+            return;
+        }
+        if c.shared.usb_dev.lock(|d| d.state()) != usb_device::device::UsbDeviceState::Configured {
+            return;
+        }
+        while let Ok(0) = c.shared.usb_class.lock(|k| k.write(report.as_bytes())) {}
+    }
 
     // --------------------------------------------------------------
     /// DEBUG
-    #[task]
-    fn tick(_: tick::Context) {
-        info!("Tick");
-        tick::spawn_after(1_0000.millis()).ok();
-    }
+    // #[task]
+    // fn tick(_: tick::Context) {
+    //     info!("Tick");
+    //     tick::spawn_after(1_0000.millis()).ok();
+    // }
 
     #[task(shared = [ws], local = [n: u8 = 0])]
     fn led_color_wheel(mut ctx: led_color_wheel::Context) {
