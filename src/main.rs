@@ -5,7 +5,6 @@
 #![no_main]
 
 use defmt_rtt as _;
-use embedded_time::duration::Microseconds;
 use panic_probe as _;
 
 use rp2040_hal as hal;
@@ -18,9 +17,10 @@ pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_RAM_MEMCPY;
 
 #[rtic::app(device = crate::hal::pac, peripherals = true, dispatchers = [PIO0_IRQ_0, PIO0_IRQ_1, PIO1_IRQ_0])]
 mod app {
-    use crate::{hal, StaticCountDown};
-    use hal::gpio::bank0::Gpio12;
+    use crate::hal;
+    use cortex_m::prelude::*;
     use hal::prelude::*;
+    use hal::{gpio::bank0::Gpio12, timer::CountDown};
 
     use embedded_hal::digital::v2::{InputPin, OutputPin};
 
@@ -30,8 +30,11 @@ mod app {
         clocks::{init_clocks_and_plls, Clock},
         pac,
         sio::Sio,
+        timer::Timer,
         watchdog::Watchdog,
     };
+
+    use rtic::RacyCell;
     use smart_leds::{brightness, SmartLedsWrite, RGB8};
     use ws2812_pio::Ws2812;
 
@@ -39,14 +42,15 @@ mod app {
 
     #[shared]
     struct Shared {
+        timer: &'static Timer,
         alarm: hal::timer::Alarm0,
-        ws: Ws2812<hal::pac::PIO0, hal::pio::SM0, StaticCountDown, Gpio12>,
+        ws: Ws2812<hal::pac::PIO0, hal::pio::SM0, CountDown<'static>, Gpio12>,
     }
 
     #[local]
     struct Local {}
 
-    #[init]
+    #[init(local = [flash: Option<Timer> = None])]
     fn init(ctx: init::Context) -> (Shared, Local, init::Monotonics) {
         let mut resets = ctx.device.RESETS;
         let mut watchdog = Watchdog::new(ctx.device.WATCHDOG);
@@ -67,6 +71,8 @@ mod app {
         let mut alarm = timer.alarm_0().unwrap();
         alarm.schedule(TIMER_INTERVAL.microseconds()).ok();
         alarm.enable_interrupt();
+        // move timer into static lifetime early so Ws2812 can use it
+        let timer = ctx.local.flash.insert(timer);
 
         let sio = Sio::new(ctx.device.SIO);
         let pins = hal::gpio::Pins::new(
@@ -94,10 +100,8 @@ mod app {
             &mut pio,
             sm0,
             clocks.peripheral_clock.freq(),
-            StaticCountDown::empty(),
+            timer.count_down(),
         );
-
-        let mut n: u8 = 128;
 
         // watchdog with low priority of 1kHz
         cortex_m::prelude::_embedded_hal_watchdog_WatchdogEnable::start(
@@ -105,23 +109,32 @@ mod app {
             10_000.microseconds(),
         );
 
-        (Shared { alarm, ws }, Local {}, init::Monotonics())
+        defmt::info!("init finished");
+        (Shared { timer, alarm, ws }, Local {}, init::Monotonics())
     }
 
-    // #[idle(shared = [ws])]
-    // fn idle(_ctx: idle::Context) -> ! {
-    //     loop {
-    //         // cortex_m::asm::wfe();
-    //         ws.write(brightness(once(wheel(n)), 32)).unwrap();
-    //         n = n.wrapping_add(1);
+    #[idle(shared = [ws, timer])]
+    fn idle(mut ctx: idle::Context) -> ! {
+        let mut delay = ctx.shared.timer.lock(|t| t.count_down());
 
-    //         delay.start(25.milliseconds());
-    //         let _ = nb::block!(delay.wait());
-    //     }
-    // }
+        let mut n = 128;
+        defmt::info!("idle entry");
+
+        loop {
+            // cortex_m::asm::wfe();
+
+            ctx.shared.ws.lock(|ws| {
+                ws.write(brightness(core::iter::once(wheel(n)), 32))
+                    .unwrap();
+            });
+            n = n.wrapping_add(1);
+            delay.start(25.milliseconds());
+            let _ = nb::block!(delay.wait());
+        }
+    }
 
     #[task(shared = [], local=[counter: u8 = 0, prev: u8 = 0], priority = 1)]
-    fn blink(mut ctx: blink::Context) {}
+    fn blink(ctx: blink::Context) {}
 
     /// Convert a number from `0..=255` to an RGB color triplet.
     ///
@@ -139,54 +152,6 @@ mod app {
             // No blue in this sector - red and green only
             wheel_pos -= 170;
             (wheel_pos * 3, 255 - (wheel_pos * 3), 0).into()
-        }
-    }
-}
-
-/// Delay implementation that waits for a 'static lifetime
-pub struct StaticCountDown {
-    timer: Option<&'static hal::Timer>,
-    period: embedded_time::duration::Microseconds<u64>,
-    next_end: Option<u64>,
-}
-
-impl StaticCountDown {
-    fn empty() -> Self {
-        Self {
-            timer: None,
-            period: Microseconds::new(0),
-            next_end: None,
-        }
-    }
-}
-
-impl embedded_hal::timer::CountDown for StaticCountDown {
-    type Time = embedded_time::duration::Microseconds<u64>;
-
-    fn start<T>(&mut self, count: T)
-    where
-        T: Into<Self::Time>,
-    {
-        self.period = count.into();
-        self.next_end = Some(
-            self.timer
-                .unwrap()
-                .get_counter()
-                .wrapping_add(self.period.0),
-        );
-    }
-
-    fn wait(&mut self) -> nb::Result<(), void::Void> {
-        if let Some(end) = self.next_end {
-            let ts = self.timer.unwrap().get_counter();
-            if ts >= end {
-                self.next_end = Some(end.wrapping_add(self.period.0));
-                Ok(())
-            } else {
-                Err(nb::Error::WouldBlock)
-            }
-        } else {
-            panic!("CountDown is not running!");
         }
     }
 }
