@@ -39,7 +39,7 @@ mod app {
 
     use usb_device::class_prelude::*;
 
-    use smart_leds::{brightness, SmartLedsWrite, RGB8};
+    use smart_leds::{brightness, SmartLedsWrite, RGB, RGB8};
     use ws2812_pio::Ws2812Direct as Ws2812;
 
     use keyberon::{
@@ -50,14 +50,14 @@ mod app {
         matrix::Matrix,
     };
 
-    const TIMER_INTERVAL: u32 = 1000;
+    const TIMER_INTERVAL: u32 = 1_000;
     const LAYERS: Layers<2, 1, 1> = layout! {{[Z X]}};
 
     // use rp2040_monotonic::*;
-    use systick_monotonic::*;
+    // use systick_monotonic::*;
 
-    #[monotonic(binds = SysTick, default = true)]
-    type MyMono = Systick<100>;
+    // #[monotonic(binds = SysTick, default = true)]
+    // type MyMono = Systick<100>;
 
     #[shared]
     struct Shared {
@@ -77,7 +77,7 @@ mod app {
 
     #[local]
     struct Local {
-        debug_led: Pin<bank0::Gpio25, Output<PushPull>>,
+        debug_led: Pin<bank0::Gpio25, Output<Readable>>,
     }
 
     #[init(local = [TIMER: Option<hal::timer::Timer> = None, USB: Option<UsbBusAllocator<UsbBus>> = None,])]
@@ -137,7 +137,7 @@ mod app {
         // Debug LEDs
         // let green = pins.gpio16.into_readable_output();
         // let red = pins.gpio17.into_readable_output();
-        let blue = pins.gpio25.into_push_pull_output();
+        let blue = pins.gpio25.into_readable_output();
 
         // neopixel
         let mut pixel_power = pins.gpio11.into_push_pull_output();
@@ -166,16 +166,27 @@ mod app {
         let usb_bus = ctx.local.USB.insert(usb_bus);
 
         let usb_class = keyberon::new_class(usb_bus, crate::kb::Leds);
-        let usb_dev = keyberon::new_device(usb_bus);
+        let usb_dev = usb_device::device::UsbDeviceBuilder::new(
+            usb_bus,
+            // https://github.com/obdev/v-usb/blob/7a28fdc685952412dad2b8842429127bc1cf9fa7/usbdrv/USB-IDs-for-free.txt#L128
+            // TODO https://github.com/pidcodes/pidcodes.github.com/
+            usb_device::device::UsbVidPid(0x1209, 0x0001),
+        )
+        .manufacturer("Dekanova")
+        .product("Muon")
+        .serial_number(env!("CARGO_PKG_VERSION"))
+        .build();
 
-        // tick::spawn().ok(); // TODO for debug, remove
+        // tick::spawn().ok();
         // led_color_wheel::spawn().ok();
 
-        let mono = Systick::new(ctx.core.SYST, clocks.system_clock.freq().0);
+        // let mono = Systick::new(ctx.core.SYST, clocks.system_clock.freq().0);
         // let mono = Rp2040Monotonic::new(ctx.device.TIMER);
 
         // TODO this is causing issues and IDK why yet
-        // watchdog.start(10_000.microseconds());
+        info!("starting watchdog");
+        watchdog.start(10_000.microseconds());
+        watchdog.feed();
 
         info!("init finished");
         (
@@ -191,7 +202,7 @@ mod app {
                 watchdog,
             },
             Local { debug_led: blue },
-            init::Monotonics(mono),
+            init::Monotonics(),
         )
     }
 
@@ -205,28 +216,39 @@ mod app {
             }
         });
     }
-    #[task(priority = 2, capacity = 8, shared = [usb_dev, usb_class, layout, ws])]
-    fn handle_event(mut c: handle_event::Context, event: Option<Event>) {
+    #[task(priority = 2, capacity = 8, shared = [usb_dev, usb_class, layout, ws], local = [color: RGB8 = RGB8::new(255, 0, 0)])]
+    fn handle_event(c: handle_event::Context, event: Option<Event>) {
         use core::iter::once;
-        // info!("got event");
 
-        let mut layout = c.shared.layout;
-        let mut ws = c.shared.ws;
+        let crate::app::handle_event::SharedResources {
+            mut layout,
+            mut usb_dev,
+            mut usb_class,
+            mut ws,
+        } = c.shared;
+        let mut color = c.local.color;
 
         match event {
             Some(e) => {
                 match &e {
-                    Event::Press(k, _) => match k {
-                        0 => ws
-                            .lock(|w| w.write(brightness(once(RGB8::new(255, 0, 0)), 5)))
-                            .unwrap(),
-                        1 => ws
-                            .lock(|w| w.write(brightness(once(RGB8::new(0, 0, 255)), 5)))
-                            .unwrap(),
-                        _ => (),
-                    },
-                    Event::Release(k, _) => info!("released key {}", k),
+                    Event::Press(_, k) => {
+                        info!("pressed key {}", k);
+                        match k {
+                            0 => color.r = 255,
+                            1 => color.b = 255,
+                            _ => (),
+                        }
+                    }
+                    Event::Release(_, k) => {
+                        info!("released key {}", k);
+                        match k {
+                            0 => color.r = 0,
+                            1 => color.b = 0,
+                            _ => (),
+                        }
+                    }
                 }
+                ws.lock(|w| w.write(brightness(once(*color), 5))).unwrap();
 
                 layout.lock(|l| l.event(e));
                 return;
@@ -235,17 +257,13 @@ mod app {
         }
 
         let report: KbHidReport = layout.lock(|l| l.keycodes().collect());
-        if !c
-            .shared
-            .usb_class
-            .lock(|k| k.device_mut().set_keyboard_report(report.clone()))
-        {
+        if !usb_class.lock(|k| k.device_mut().set_keyboard_report(report.clone())) {
             return;
         }
-        if c.shared.usb_dev.lock(|d| d.state()) != usb_device::device::UsbDeviceState::Configured {
+        if usb_dev.lock(|d| d.state()) != usb_device::device::UsbDeviceState::Configured {
             return;
         }
-        while let Ok(0) = c.shared.usb_class.lock(|k| k.write(report.as_bytes())) {}
+        while let Ok(0) = usb_class.lock(|k| k.write(report.as_bytes())) {}
     }
 
     #[task(binds = TIMER_IRQ_0, priority = 1, shared = [matrix, debouncer, timer, alarm, watchdog, usb_dev, usb_class])]
@@ -262,15 +280,20 @@ mod app {
         for event in c.shared.debouncer.events(c.shared.matrix.get().unwrap()) {
             handle_event::spawn(Some(event)).unwrap();
         }
-
+        // nothing new, but still make a report
         handle_event::spawn(None).unwrap();
     }
 
     // --------------------------------------------------------------
     // DEBUG
-    // #[task]
-    // fn tick(_: tick::Context) {
-    //     info!("Tick");
+    // #[task(local = [debug_led])]
+    // fn tick(ctx: tick::Context) {
+    //     let debug_led = ctx.local.debug_led;
+    //     if debug_led.is_low().unwrap() {
+    //         debug_led.set_high().ok();
+    //     } else {
+    //         debug_led.set_low().ok();
+    //     }
     //     tick::spawn_after(1_0000.millis()).ok();
     // }
 
