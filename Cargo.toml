@@ -20,6 +20,7 @@ panic-probe = { version = "0.3.0", features = ["print-defmt"] }
 # If you're not going to use a Board Support Package you'll need these:
 rp2040-hal = { version = "0.4.0", features = ["rt"] }
 rp2040-boot2 = "0.2.0"
+rp2040-monotonic = "1.1.0"
 
 usb-device = "0.2.8"
 usbd-hid = "0.6.0"
@@ -28,7 +29,6 @@ smart-leds = "0.3.0"
 
 # TODO remove and merge OwnedCountDown with rp2040 HAL
 nb = "1.0.0"
-void = { version = "1.0.2", default-features = false }
 
 # cargo build/run
 [profile.dev]
