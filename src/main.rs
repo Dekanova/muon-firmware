@@ -36,22 +36,23 @@ mod app {
         timer::Timer,
         watchdog::Watchdog,
     };
-    use systick_monotonic::*;
 
     use smart_leds::{brightness, SmartLedsWrite, RGB8};
     use ws2812_pio::Ws2812;
 
     const TIMER_INTERVAL: u32 = 1000;
 
-    use rtic::rtic_monotonic::Monotonic;
+    // use rp2040_monotonic::*;
+    use systick_monotonic::*;
+
     #[monotonic(binds = SysTick, default = true)]
     type MyMono = Systick<100>;
 
     #[shared]
     struct Shared {
         // alarm: hal::timer::Alarm0,
-        #[lock_free]
-        timer: &'static hal::timer::Timer,
+        // #[lock_free]
+        // timer: &'static hal::timer::Timer,
         // ws: Ws2812<hal::pac::PIO0, hal::pio::SM0, CountDown<'static>, Gpio12>,
     }
 
@@ -78,14 +79,14 @@ mod app {
         .ok()
         .unwrap();
 
-        // move timer into static lifetime early so Ws2812 can use it
-        let mut timer = hal::Timer::new(ctx.device.TIMER, &mut resets);
-        let mut alarm = timer.alarm_0().unwrap();
-        let _ = alarm.schedule(TIMER_INTERVAL.microseconds());
-        // alarm.enable_interrupt();
+        // // move timer into static lifetime early so Ws2812 can use it
+        // let mut timer = hal::Timer::new(ctx.device.TIMER, &mut resets);
+        // let mut alarm = timer.alarm_0().unwrap();
+        // let _ = alarm.schedule(TIMER_INTERVAL.microseconds());
+        // // alarm.enable_interrupt();
 
         // TODO reput this in
-        let timer = ctx.local.TIMER.insert(timer);
+        // let timer = ctx.local.TIMER.insert(timer);
 
         let sio = Sio::new(ctx.device.SIO);
         let pins = hal::gpio::Pins::new(
@@ -98,7 +99,8 @@ mod app {
         // Debug LEDs
         // let green = pins.gpio16.into_readable_output();
         // let red = pins.gpio17.into_readable_output();
-        let blue = pins.gpio25.into_push_pull_output();
+        let mut blue = pins.gpio25.into_push_pull_output();
+        blue.set_low().ok();
 
         // // neopixel
         let pixel_power = pins.gpio11;
@@ -117,38 +119,34 @@ mod app {
         tick::spawn().ok();
 
         let mono = Systick::new(ctx.core.SYST, clocks.system_clock.freq().0);
-        // let monotonic = Rp2040Monotonic::new(ctx.device.TIMER);
+        // let mono = Rp2040Monotonic::new(ctx.device.TIMER);
 
-        // watchdog with low priority of 1kHz
-        cortex_m::prelude::_embedded_hal_watchdog_WatchdogEnable::start(
-            &mut watchdog,
-            1_000.microseconds(),
-        );
+        // // watchdog with low priority of 1kHz
+        // cortex_m::prelude::_embedded_hal_watchdog_WatchdogEnable::start(
+        //     &mut watchdog,
+        //     10_000.microseconds(),
+        // );
 
         info!("init finished");
-        (
-            Shared { timer },
-            Local { debug_led: blue },
-            init::Monotonics(mono),
-        )
+        (Shared {}, Local { debug_led: blue }, init::Monotonics(mono))
     }
 
-    #[idle(shared = [timer], local = [debug_led])]
-    fn idle(ctx: idle::Context) -> ! {
-        let mut delay = ctx.shared.timer.count_down();
-        let debug_led = ctx.local.debug_led;
-        loop {
-            info!("on!");
-            debug_led.set_high().unwrap();
-            delay.start(1.seconds());
-            nb::block!(delay.wait()).ok();
+    // #[idle(shared = [], local = [debug_led])]
+    // fn idle(ctx: idle::Context) -> ! {
+    //     let mut delay = ctx.shared.timer.count_down();
+    //     let debug_led = ctx.local.debug_led;
+    //     loop {
+    //         info!("on!");
+    //         debug_led.set_high().unwrap();
+    //         delay.start(1.seconds());
+    //         nb::block!(delay.wait()).ok();
 
-            info!("off!");
-            delay.start(1.seconds());
-            debug_led.set_low().unwrap();
-            nb::block!(delay.wait()).ok();
-        }
-    }
+    //         info!("off!");
+    //         delay.start(1.seconds());
+    //         debug_led.set_low().unwrap();
+    //         nb::block!(delay.wait()).ok();
+    //     }
+    // }
 
     #[task]
     fn tick(_: tick::Context) {
