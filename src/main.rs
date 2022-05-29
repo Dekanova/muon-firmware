@@ -4,14 +4,15 @@
 #![no_std]
 #![no_main]
 
-use defmt_rtt as _;
+// use defmt_rtt as _;
+// use panic_halt as _;
 use panic_probe as _;
 
 use rp2040_hal as hal;
 
 #[link_section = ".boot2"]
 #[used]
-pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_RAM_MEMCPY;
+pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 
 // https://crates.io/crates/switch-hal
 
@@ -19,7 +20,6 @@ pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_RAM_MEMCPY;
 mod app {
     use crate::hal;
     // use cortex_m::prelude::*;
-    use defmt::*;
     // use hal::prelude::*;
     // use hal::{gpio::bank0::Gpio12, timer::CountDown};
 
@@ -43,7 +43,7 @@ mod app {
     // const TIMER_INTERVAL: u32 = 1000;
 
     #[monotonic(binds = TIMER_IRQ_0, default = true)]
-    type MyMono = Rp2040Monotonic; // 100 Hz / 10 ms granularity
+    type MyMono = Rp2040Monotonic;
 
     #[shared]
     struct Shared {
@@ -59,7 +59,7 @@ mod app {
 
     #[init]
     fn init(ctx: init::Context) -> (Shared, Local, init::Monotonics) {
-        info!("init start");
+        // info!("init start");
         let mut resets = ctx.device.RESETS;
         let mut watchdog = Watchdog::new(ctx.device.WATCHDOG);
 
@@ -118,7 +118,7 @@ mod app {
         //     1_000.microseconds(),
         // );
 
-        info!("init finished");
+        // info!("init finished");
         (
             Shared {},
             Local {
