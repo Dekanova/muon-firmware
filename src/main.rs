@@ -51,6 +51,7 @@ mod app {
     };
 
     const TIMER_INTERVAL: u32 = 1000;
+    const LAYERS: Layers<2, 1, 1> = layout! {{[Z X]}};
 
     // use rp2040_monotonic::*;
     use systick_monotonic::*;
@@ -60,16 +61,18 @@ mod app {
 
     #[shared]
     struct Shared {
-        // alarm: hal::timer::Alarm0,
-        #[lock_free]
-        timer: &'static hal::timer::Timer,
+        alarm: hal::timer::Alarm0,
+        timer: hal::timer::Timer,
         ws: Ws2812<hal::pac::PIO0, hal::pio::SM0, Gpio12>,
         usb_dev: usb_device::device::UsbDevice<'static, UsbBus>,
         usb_class: keyberon::Class<'static, UsbBus, crate::kb::Leds>,
-        // #[lock_free]
-        // debouncer: Debouncer<PressedKeys<16, 5>>,
+        #[lock_free]
         matrix: Matrix<DynPin, DummyPin, 2, 1>,
         layout: Layout<2, 1, 1>,
+        #[lock_free]
+        debouncer: Debouncer<[[bool; 2]; 1]>,
+        #[lock_free]
+        watchdog: Watchdog,
     }
 
     #[local]
@@ -82,6 +85,7 @@ mod app {
         info!("init start");
         let mut resets = ctx.device.RESETS;
         let mut watchdog = Watchdog::new(ctx.device.WATCHDOG);
+        watchdog.pause_on_debug(false);
 
         let clocks = init_clocks_and_plls(
             12_000_000u32,
@@ -99,7 +103,7 @@ mod app {
         let mut timer = hal::Timer::new(ctx.device.TIMER, &mut resets);
         let mut alarm = timer.alarm_0().unwrap();
         let _ = alarm.schedule(TIMER_INTERVAL.microseconds());
-        // alarm.enable_interrupt();
+        alarm.enable_interrupt();
 
         // TODO reput this in
         let timer = ctx.local.TIMER.insert(timer);
@@ -125,8 +129,8 @@ mod app {
         .unwrap();
 
         // single layer for now
-        const LAYERS: Layers<2, 1, 1> = layout! {{[Z X]}};
         let layout = Layout::new(&LAYERS);
+        let debouncer = Debouncer::new([[false, false]], [[false, false]], 10);
 
         // gpio2.into_pull_up_input().into();
 
@@ -138,7 +142,7 @@ mod app {
         // neopixel
         let mut pixel_power = pins.gpio11.into_push_pull_output();
 
-        pixel_power.set_high();
+        pixel_power.set_high().ok();
 
         let pixel_data = pins.gpio12;
 
@@ -165,49 +169,30 @@ mod app {
         let usb_dev = keyberon::new_device(usb_bus);
 
         // tick::spawn().ok(); // TODO for debug, remove
-        led_color_wheel::spawn().ok();
+        // led_color_wheel::spawn().ok();
 
         let mono = Systick::new(ctx.core.SYST, clocks.system_clock.freq().0);
         // let mono = Rp2040Monotonic::new(ctx.device.TIMER);
 
         // TODO this is causing issues and IDK why yet
-        // // watchdog with low priority of 1kHz
-        // cortex_m::prelude::_embedded_hal_watchdog_WatchdogEnable::start(
-        //     &mut watchdog,
-        //     10_000.microseconds(),
-        // );
+        // watchdog.start(10_000.microseconds());
 
         info!("init finished");
         (
             Shared {
-                timer,
+                timer: ctx.local.TIMER.take().unwrap(),
                 usb_dev,
                 usb_class,
                 matrix,
                 ws,
                 layout,
+                alarm,
+                debouncer, // nb * update Hz?
+                watchdog,
             },
             Local { debug_led: blue },
             init::Monotonics(mono),
         )
-    }
-
-    // idle blinky to know we are running
-    #[idle(shared = [timer], local = [debug_led])]
-    fn idle(ctx: idle::Context) -> ! {
-        let mut delay = ctx.shared.timer.count_down();
-        let debug_led = ctx.local.debug_led;
-        loop {
-            // info!("on!");
-            debug_led.set_high().unwrap();
-            delay.start(1.seconds());
-            nb::block!(delay.wait()).ok();
-
-            // info!("off!");
-            delay.start(1.seconds());
-            debug_led.set_low().unwrap();
-            nb::block!(delay.wait()).ok();
-        }
     }
 
     #[task(binds = USBCTRL_IRQ, priority = 4, shared = [usb_dev, usb_class])]
@@ -220,15 +205,26 @@ mod app {
             }
         });
     }
-    #[task(priority = 2, capacity = 8, shared = [usb_dev, usb_class, layout])]
+    #[task(priority = 2, capacity = 8, shared = [usb_dev, usb_class, layout, ws])]
     fn handle_event(mut c: handle_event::Context, event: Option<Event>) {
-        info!("got event");
+        use core::iter::once;
+        // info!("got event");
 
         let mut layout = c.shared.layout;
+        let mut ws = c.shared.ws;
+
         match event {
             Some(e) => {
                 match &e {
-                    Event::Press(k, _) => info!("pressed key {}", k),
+                    Event::Press(k, _) => match k {
+                        0 => ws
+                            .lock(|w| w.write(brightness(once(RGB8::new(255, 0, 0)), 5)))
+                            .unwrap(),
+                        1 => ws
+                            .lock(|w| w.write(brightness(once(RGB8::new(0, 0, 255)), 5)))
+                            .unwrap(),
+                        _ => (),
+                    },
                     Event::Release(k, _) => info!("released key {}", k),
                 }
 
@@ -252,26 +248,63 @@ mod app {
         while let Ok(0) = c.shared.usb_class.lock(|k| k.write(report.as_bytes())) {}
     }
 
+    #[task(binds = TIMER_IRQ_0, priority = 1, shared = [matrix, debouncer, timer, alarm, watchdog, usb_dev, usb_class])]
+    fn scan_timer_irq(mut c: scan_timer_irq::Context) {
+        let mut alarm = c.shared.alarm;
+
+        alarm.lock(|a| {
+            a.clear_interrupt();
+            let _ = a.schedule(TIMER_INTERVAL.microseconds());
+        });
+
+        c.shared.watchdog.feed();
+
+        for event in c.shared.debouncer.events(c.shared.matrix.get().unwrap()) {
+            handle_event::spawn(Some(event)).unwrap();
+        }
+
+        handle_event::spawn(None).unwrap();
+    }
+
     // --------------------------------------------------------------
-    /// DEBUG
+    // DEBUG
     // #[task]
     // fn tick(_: tick::Context) {
     //     info!("Tick");
     //     tick::spawn_after(1_0000.millis()).ok();
     // }
 
-    #[task(shared = [ws], local = [n: u8 = 0])]
-    fn led_color_wheel(mut ctx: led_color_wheel::Context) {
-        let n = ctx.local.n;
+    // #[task(shared = [ws], local = [n: u8 = 0])]
+    // fn led_color_wheel(mut ctx: led_color_wheel::Context) {
+    //     let n = ctx.local.n;
 
-        ctx.shared.ws.lock(|ws| {
-            ws.write(brightness(core::iter::once(crate::wheel_color(*n)), 32))
-                .unwrap();
-            *n = n.wrapping_add(1);
-        });
+    //     ctx.shared.ws.lock(|ws| {
+    //         ws.write(brightness(core::iter::once(crate::wheel_color(*n)), 5))
+    //             .unwrap();
+    //         *n = n.wrapping_add(1);
+    //     });
 
-        led_color_wheel::spawn_after(20.millis()).ok();
-    }
+    //     led_color_wheel::spawn_after(20.millis()).ok();
+    // }
+
+    // // idle blinky to know we are running
+    // #[idle(shared = [timer], local = [debug_led])]
+    // fn idle(mut ctx: idle::Context) -> ! {
+    //     let delay = ctx.shared.timer.lock(|t| t.count_down());
+
+    //     let debug_led = ctx.local.debug_led;
+    //     loop {
+    //         // info!("on!");
+    //         debug_led.set_high().unwrap();
+    //         delay.start(1.seconds());
+    //         nb::block!(delay.wait()).ok();
+
+    //         // info!("off!");
+    //         delay.start(1.seconds());
+    //         debug_led.set_low().unwrap();
+    //         nb::block!(delay.wait()).ok();
+    //     }
+    // }
 }
 
 /// Convert a number from `0..=255` to an RGB color triplet.
