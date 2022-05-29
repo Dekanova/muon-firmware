@@ -8,27 +8,25 @@ resolver = "2"
 
 [dependencies]
 cortex-m = "0.7.4"
-cortex-m-rt = "0.7.1"
-cortex-m-rtic = "1.1.2"
+cortex-m-rtic = "1.0.0"
+rp2040-monotonic = "1.1.0"
 embedded-hal = { version = "0.2.7", features = ["unproven"] }
 embedded-time = "0.12.1"
 
 defmt = "0.3.1"
 defmt-rtt = "0.3.2"
-panic-probe = { version = "0.3.0", features = ["print-rtt"] }
-panic-halt = "*"
+panic-probe = { version = "0.3.0", features = ["print-defmt"] }
+# panic-halt = "*"
 
-# If you're not going to use a Board Support Package you'll need these:
+# TODO maybe make a BSP
 rp2040-hal = { version = "0.4.0", features = ["rt"] }
 rp2040-boot2 = "0.2.0"
-rp2040-monotonic = "1.1.0"
 
 usb-device = "0.2.8"
 usbd-hid = "0.6.0"
 ws2812-pio = { git = "https://github.com/ithinuel/ws2812-pio-rs", rev = "fd6b6604d65a66242b52ccf7f24a95ca325991dd" }
 smart-leds = "0.3.0"
 
-# TODO remove and merge OwnedCountDown with rp2040 HAL
 nb = "1.0.0"
 
 # cargo build/run
@@ -50,20 +48,20 @@ lto = 'fat'
 opt-level = 3
 overflow-checks = false
 
-# # do not optimize proc-macro crates = faster builds from scratch
-# [profile.dev.build-override]
-# codegen-units = 8
-# debug = false
-# debug-assertions = false
-# opt-level = 0
-# overflow-checks = false
+# do not optimize proc-macro crates = faster builds from scratch
+[profile.dev.build-override]
+codegen-units = 8
+debug = false
+debug-assertions = false
+opt-level = 0
+overflow-checks = false
 
-# [profile.release.build-override]
-# codegen-units = 8
-# debug = false
-# debug-assertions = false
-# opt-level = 0
-# overflow-checks = false
+[profile.release.build-override]
+codegen-units = 8
+debug = false
+debug-assertions = false
+opt-level = 0
+overflow-checks = false
 
 # cargo test
 [profile.test]
