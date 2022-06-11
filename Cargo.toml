@@ -26,7 +26,7 @@ rp2040-boot2 = "0.2.0"
 usb-device = "0.2.8"
 usbd-hid = "0.6.0"
 # TODO find out why the new release isnt published
-keyberon = { git = "https://github.com/TeXitoi/keyberon" }
+keyberon = { git = "https://github.com/TeXitoi/keyberon", rev = "d56d8580213cc260b0a39f2b88b5931885a83b2d" }
 # 0.2 release that isn't published still https://github.com/ithinuel/ws2812-pio-rs/issues/11
 ws2812-pio = { git = "https://github.com/ithinuel/ws2812-pio-rs", rev = "fd6b6604d65a66242b52ccf7f24a95ca325991dd" }
 smart-leds = "0.3.0"

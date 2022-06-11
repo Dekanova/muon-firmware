@@ -47,7 +47,7 @@ mod app {
         hid::HidClass,
         key_code::*,
         layout::{Event, *},
-        matrix::Matrix,
+        matrix::DirectPinMatrix,
     };
 
     const TIMER_INTERVAL: u32 = 1_000;
@@ -67,7 +67,7 @@ mod app {
         usb_dev: usb_device::device::UsbDevice<'static, UsbBus>,
         usb_class: keyberon::Class<'static, UsbBus, crate::kb::Leds>,
         #[lock_free]
-        matrix: Matrix<DynPin, DummyPin, 2, 1>,
+        matrix: DirectPinMatrix<DynPin, 2, 1>,
         layout: Layout<2, 1, 1>,
         #[lock_free]
         debouncer: Debouncer<[[bool; 2]; 1]>,
@@ -119,13 +119,10 @@ mod app {
         // Matric whoOhhoH -------------
         // TODO maybe print err to defmt
         // TODO add `DynPin` to keyberon docs
-        let matrix = Matrix::new(
-            [
-                pins.gpio27.into_pull_up_input().into(),
-                pins.gpio26.into_pull_up_input().into(),
-            ],
-            [crate::kb::DummyPin],
-        )
+        let matrix = DirectPinMatrix::new([[
+            Some(pins.gpio27.into_pull_up_input().into()),
+            Some(pins.gpio26.into_pull_up_input().into()),
+        ]])
         .unwrap();
 
         // single layer for now
@@ -206,7 +203,7 @@ mod app {
         )
     }
 
-    #[task(binds = USBCTRL_IRQ, priority = 4, shared = [usb_dev, usb_class])]
+    #[task(binds = USBCTRL_IRQ, priority = 3, shared = [usb_dev, usb_class])]
     fn usb_rx(c: usb_rx::Context) {
         let usb = c.shared.usb_dev;
         let kb = c.shared.usb_class;
@@ -230,6 +227,9 @@ mod app {
 
         match event {
             Some(e) => {
+                layout.lock(|l| l.event(e));
+
+                // led things
                 match &e {
                     Event::Press(_, k) => {
                         info!("pressed key {}", k);
@@ -249,9 +249,6 @@ mod app {
                     }
                 }
                 ws.lock(|w| w.write(brightness(once(*color), 5))).unwrap();
-
-                layout.lock(|l| l.event(e));
-                return;
             }
             _ => (),
         }
@@ -266,7 +263,7 @@ mod app {
         while let Ok(0) = usb_class.lock(|k| k.write(report.as_bytes())) {}
     }
 
-    #[task(binds = TIMER_IRQ_0, priority = 1, shared = [matrix, debouncer, timer, alarm, watchdog, usb_dev, usb_class])]
+    #[task(binds = TIMER_IRQ_0, priority = 1, shared = [matrix, layout, debouncer, timer, alarm, watchdog, usb_dev, usb_class])]
     fn scan_timer_irq(mut c: scan_timer_irq::Context) {
         let mut alarm = c.shared.alarm;
 
@@ -276,6 +273,8 @@ mod app {
         });
 
         c.shared.watchdog.feed();
+
+        c.shared.layout.lock(|l| l.tick());
 
         for event in c.shared.debouncer.events(c.shared.matrix.get().unwrap()) {
             handle_event::spawn(Some(event)).unwrap();
