@@ -1,9 +1,9 @@
 [package]
-authors = ["the rp-rs team"]
+authors = ["Dekanova LLC, mriise<me@mriise.net>"]
 edition = "2018"
 readme = "README.md"
-name = "rp2040-project-template"
-version = "0.1.0"
+name = "muon-firmware"
+version = "0.1.0-rc2"
 resolver = "2"
 
 [dependencies]
@@ -28,7 +28,7 @@ usbd-hid = "0.6.0"
 # TODO find out why the new release isnt published
 keyberon = { git = "https://github.com/TeXitoi/keyberon", rev = "d56d8580213cc260b0a39f2b88b5931885a83b2d" }
 # 0.2 release that isn't published still https://github.com/ithinuel/ws2812-pio-rs/issues/11
-ws2812-pio = { git = "https://github.com/ithinuel/ws2812-pio-rs", rev = "fd6b6604d65a66242b52ccf7f24a95ca325991dd" }
+ws2812-pio = "0.2.0"
 smart-leds = "0.3.0"
 smart-leds-trait = "0.2"
 
