@@ -44,7 +44,7 @@ jobs:
           submodules: true
       - uses: actions-rs/toolchain@v1
         with:
-          toolchain: stable
+          toolchain: nightly
           components: clippy
       - run: rustup target install thumbv6m-none-eabi
       - uses: actions-rs/clippy-check@v1
@@ -60,7 +60,7 @@ jobs:
           submodules: true
       - uses: actions-rs/toolchain@v1
         with:
-          toolchain: stable
+          toolchain: nightly
           components: rustfmt
       - run: rustup target install thumbv6m-none-eabi
       - run: cargo fmt -- --check
