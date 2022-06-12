@@ -1,11 +1,9 @@
 pub struct Leds;
 impl keyberon::keyboard::Leds for Leds {
-    fn caps_lock(&mut self, status: bool) {}
+    fn caps_lock(&mut self, _status: bool) {}
 }
 
-use embedded_hal::digital::v2::{InputPin, OutputPin};
-use keyberon::matrix::Matrix;
-
+use embedded_hal::digital::v2::OutputPin;
 /// Dummy output pin that does nothing since we dont have a matrix
 pub struct DummyPin;
 
