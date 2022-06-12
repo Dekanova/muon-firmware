@@ -1,6 +1,6 @@
 [package]
 authors = ["Dekanova LLC, mriise<me@mriise.net>"]
-edition = "2018"
+edition = "2021"
 readme = "README.md"
 name = "muon-firmware"
 version = "0.1.0-rc2"
