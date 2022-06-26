@@ -20,7 +20,7 @@ panic-probe = { version = "0.3.0", features = ["print-defmt"] }
 # panic-halt = "*"
 
 # TODO maybe make a BSP
-rp2040-hal = { version = "0.4.0", features = ["rt"] }
+rp2040-hal = { version = "0.5.0", features = ["rt"] }
 rp2040-boot2 = "0.2.0"
 
 usb-device = "0.2.8"
@@ -28,11 +28,12 @@ usbd-hid = "0.6.0"
 # TODO find out why the new release isnt published
 keyberon = { git = "https://github.com/TeXitoi/keyberon", rev = "d56d8580213cc260b0a39f2b88b5931885a83b2d" }
 # 0.2 release that isn't published still https://github.com/ithinuel/ws2812-pio-rs/issues/11
-ws2812-pio = "0.2.0"
+ws2812-pio = "0.3.0"
 smart-leds = "0.3.0"
 smart-leds-trait = "0.2"
 
 nb = "1.0.0"
+void = { version = "1.0.2", default-features = false }
 
 # cargo build/run
 [profile.dev]

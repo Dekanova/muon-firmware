@@ -15,6 +15,7 @@ use panic_probe as _;
 use rp2040_hal as hal;
 
 mod kb;
+mod led;
 
 // TODO https://crates.io/crates/switch-hal
 #[rtic::app(device = crate::hal::pac, peripherals = true, dispatchers = [PIO0_IRQ_0, PIO0_IRQ_1])] // extra PIO0_IRQ_1, PIO1_IRQ_0
@@ -24,6 +25,8 @@ mod app {
     // use hal::prelude::*;
     use defmt::*;
     use hal::gpio::bank0::Gpio12;
+    use hal::rom_data::reset_to_usb_boot;
+    use hal::timer::CountDown;
     use hal::{
         clocks::{init_clocks_and_plls, Clock},
         gpio::*,
@@ -37,8 +40,8 @@ mod app {
 
     use usb_device::class_prelude::*;
 
-    use smart_leds::{brightness, SmartLedsWrite, RGB8};
-    use ws2812_pio::Ws2812Direct as Ws2812;
+    use crate::led::Ws2812;
+    use smart_leds::{brightness, colors, SmartLedsWrite, RGB8};
 
     use keyberon::{
         debounce::Debouncer,
@@ -46,6 +49,9 @@ mod app {
         layout::{Event, *},
         matrix::DirectPinMatrix,
     };
+
+    use crate::kb::Leds;
+    use crate::led::*;
 
     const TIMER_INTERVAL: u64 = 1_000;
     const LAYERS: Layers<2, 1, 1> = layout! {{[Z X]}};
@@ -61,7 +67,6 @@ mod app {
 
     #[shared]
     struct Shared {
-        ws: Ws2812<hal::pac::PIO0, hal::pio::SM0, Gpio12>,
         usb_dev: usb_device::device::UsbDevice<'static, UsbBus>,
         usb_class: keyberon::Class<'static, UsbBus, crate::kb::Leds>,
         #[lock_free]
@@ -71,6 +76,16 @@ mod app {
         debouncer: Debouncer<[[bool; 2]; 1]>,
         #[lock_free]
         watchdog: Watchdog,
+        #[lock_free]
+        underglow: (
+            [RGB8; 2],
+            Ws2812<hal::pac::PIO0, hal::pio::SM0, CountDownMonotonic, bank0::Gpio28>,
+        ),
+        #[lock_free]
+        keyglow: (
+            [RGB8; 2],
+            Ws2812<hal::pac::PIO0, hal::pio::SM1, CountDownMonotonic, bank0::Gpio29>,
+        ),
     }
 
     #[local]
@@ -105,14 +120,21 @@ mod app {
             &mut resets,
         );
 
-        // Matric whoOhhoH -------------
+        // Matrix whoOhhoH -------------
         // TODO maybe print err to defmt
         // TODO add `DynPin` to keyberon docs
-        let matrix = DirectPinMatrix::new([[
-            Some(pins.gpio27.into_pull_up_input().into()),
-            Some(pins.gpio26.into_pull_up_input().into()),
+        let mut matrix = DirectPinMatrix::new([[
+            Some(pins.gpio0.into_pull_up_input().into()),
+            Some(pins.gpio1.into_pull_up_input().into()),
         ]])
         .unwrap();
+
+        // ------ REBOOT SELECT -------
+        // reboot into bootselect if both main buttons are held down under reset
+        let states = matrix.get().unwrap()[0];
+        if states[0] && states[1] {
+            reset_to_usb_boot(0, 0);
+        }
 
         // single layer for now
         let layout = Layout::new(&LAYERS);
@@ -130,16 +152,31 @@ mod app {
 
         pixel_power.set_high().ok();
 
-        let pixel_data = pins.gpio12;
+        let underglow_pin = pins.gpio28;
+        let keyglow_pin = pins.gpio29;
 
-        let (mut pio, sm0, _, _, _) = hal::pio::PIOExt::split(ctx.device.PIO0, &mut resets);
+        let (mut pio, sm0, sm1, _, _) = hal::pio::PIOExt::split(ctx.device.PIO0, &mut resets);
 
         // LED
-        let ws = Ws2812::new(
-            pixel_data.into_mode(),
-            &mut pio,
-            sm0,
-            clocks.peripheral_clock.freq(),
+        let underglow = (
+            [RGB8::new(0, 0, 0); 2],
+            Ws2812::new(
+                underglow_pin.into_mode(),
+                &mut pio,
+                sm0,
+                clocks.peripheral_clock.freq(),
+                CountDownMonotonic::new(60u64.micros()),
+            ),
+        );
+        let keyglow = (
+            [RGB8::new(0, 0, 0); 2],
+            Ws2812::new(
+                keyglow_pin.into_mode(),
+                &mut pio,
+                sm1,
+                clocks.peripheral_clock.freq(),
+                CountDownMonotonic::new(60u64.micros()),
+            ),
         );
 
         let usb_bus = UsbBusAllocator::new(UsbBus::new(
@@ -151,7 +188,7 @@ mod app {
         ));
         let usb_bus = ctx.local.USB.insert(usb_bus);
 
-        let usb_class = keyberon::new_class(usb_bus, crate::kb::Leds);
+        let usb_class = keyberon::new_class(usb_bus, Leds);
         let usb_dev = usb_device::device::UsbDeviceBuilder::new(
             usb_bus,
             // https://github.com/obdev/v-usb/blob/7a28fdc685952412dad2b8842429127bc1cf9fa7/usbdrv/USB-IDs-for-free.txt#L128
@@ -164,7 +201,7 @@ mod app {
         .build();
 
         scan_timer_irq::spawn().ok();
-        status_blinky::spawn().ok();
+        // status_blinky::spawn().ok();
         // led_color_wheel::spawn().ok();
 
         // let mono = Systick::new(ctx.core.SYST, clocks.system_clock.freq().0);
@@ -174,13 +211,17 @@ mod app {
         watchdog.start(10_000.microseconds());
         watchdog.feed();
 
-        info!("init finished");
+        info!(
+            "init finished running at {} hz",
+            embedded_time::fixed_point::FixedPoint::integer(&clocks.system_clock.freq())
+        );
         (
             Shared {
                 usb_dev,
                 usb_class,
                 matrix,
-                ws,
+                underglow,
+                keyglow,
                 layout,
                 debouncer, // nb * update Hz?
                 watchdog,
@@ -201,41 +242,62 @@ mod app {
         });
     }
 
-    #[task(priority = 2, capacity = 8, shared = [usb_dev, usb_class, layout, ws], local = [color: RGB8 = RGB8::new(255, 0, 0)])]
+    #[task(priority = 2, capacity = 8, shared = [usb_dev, usb_class, layout, underglow, keyglow])]
     fn handle_event(c: handle_event::Context, event: Option<Event>) {
-        use core::iter::once;
-
         let crate::app::handle_event::SharedResources {
             mut layout,
             mut usb_dev,
             mut usb_class,
-            mut ws,
+            underglow,
+            keyglow,
         } = c.shared;
-        let mut color = c.local.color;
 
         if let Some(e) = event {
             layout.lock(|l| l.event(e));
 
+            // underglow combine red and blue together
+            // keyglow is per key color
+            let (u_colors, u_ws) = underglow;
+            let (k_colors, k_ws) = keyglow;
+
+            // let mut color = u_colors[0];
+
             // led things
             match &e {
                 Event::Press(_, k) => {
-                    info!("pressed key {}", k);
+                    // info!("pressed key {}", k);
                     match k {
-                        0 => color.r = 255,
-                        1 => color.b = 255,
+                        0 => {
+                            u_colors.iter_mut().for_each(|c| c.r = 255);
+                            k_colors[0].r = 255;
+                        }
+                        1 => {
+                            u_colors.iter_mut().for_each(|c| c.b = 255);
+                            k_colors[1].b = 255;
+                        }
                         _ => (),
                     }
                 }
                 Event::Release(_, k) => {
-                    info!("released key {}", k);
+                    // info!("released key {}", k);
                     match k {
-                        0 => color.r = 0,
-                        1 => color.b = 0,
+                        0 => {
+                            u_colors.iter_mut().for_each(|c| c.r = 0);
+                            k_colors[0].r = 0;
+                        }
+                        1 => {
+                            u_colors.iter_mut().for_each(|c| c.b = 0);
+                            k_colors[1].b = 0;
+                        }
                         _ => (),
                     }
                 }
             }
-            ws.lock(|w| w.write(brightness(once(*color), 5))).unwrap();
+
+            u_ws.write(brightness(u_colors.iter().copied(), 30))
+                .unwrap();
+            k_ws.write(brightness(k_colors.iter().copied(), 10))
+                .unwrap();
         }
 
         let report: KbHidReport = layout.lock(|l| l.keycodes().collect());
@@ -283,17 +345,17 @@ mod app {
     //     led_color_wheel::spawn_after(20.millis()).ok();
     // }
 
-    #[task(priority = 1, local = [debug_led])]
-    fn status_blinky(ctx: status_blinky::Context) {
-        let led = ctx.local.debug_led;
-        if led.is_high().unwrap() {
-            led.set_low().ok();
-        } else {
-            led.set_high().ok();
-        }
+    // #[task(priority = 1, local = [debug_led])]
+    // fn status_blinky(ctx: status_blinky::Context) {
+    //     let led = ctx.local.debug_led;
+    //     if led.is_high().unwrap() {
+    //         led.set_low().ok();
+    //     } else {
+    //         led.set_high().ok();
+    //     }
 
-        status_blinky::spawn_after(1000u64.millis()).ok();
-    }
+    //     status_blinky::spawn_after(1000u64.millis()).ok();
+    // }
 }
 
 // /// Convert a number from `0..=255` to an RGB color triplet.

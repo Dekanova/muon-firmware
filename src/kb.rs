@@ -4,6 +4,7 @@ impl keyberon::keyboard::Leds for Leds {
 }
 
 use embedded_hal::digital::v2::OutputPin;
+
 /// Dummy output pin that does nothing since we dont have a matrix
 pub struct DummyPin;
 
