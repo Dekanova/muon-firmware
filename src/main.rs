@@ -54,7 +54,8 @@ mod app {
     use crate::led::*;
 
     const TIMER_INTERVAL: u64 = 1_000;
-    const LAYERS: Layers<2, 1, 1> = layout! {{[Z X]}};
+    const SW_COUNT: usize = 2;
+    const LAYERS: Layers<SW_COUNT, 1, 1> = layout! {{[Z X]}};
 
     use rp2040_monotonic::{fugit::*, *};
     // use systick_monotonic::*;
@@ -70,27 +71,22 @@ mod app {
         usb_dev: usb_device::device::UsbDevice<'static, UsbBus>,
         usb_class: keyberon::Class<'static, UsbBus, crate::kb::Leds>,
         #[lock_free]
-        matrix: DirectPinMatrix<DynPin, 2, 1>,
-        layout: Layout<2, 1, 1>,
+        matrix: DirectPinMatrix<DynPin, SW_COUNT, 1>,
+        layout: Layout<SW_COUNT, 1, 1>,
         #[lock_free]
-        debouncer: Debouncer<[[bool; 2]; 1]>,
+        debouncer: Debouncer<[[bool; SW_COUNT]; 1]>,
         #[lock_free]
         watchdog: Watchdog,
         #[lock_free]
-        underglow: (
-            [RGB8; 2],
-            Ws2812<hal::pac::PIO0, hal::pio::SM0, CountDownMonotonic, bank0::Gpio28>,
-        ),
+        underglow: KeypadLEDs<hal::pac::PIO0, hal::pio::SM0, CountDownMonotonic, bank0::Gpio28, 2>,
         #[lock_free]
-        keyglow: (
-            [RGB8; 2],
-            Ws2812<hal::pac::PIO0, hal::pio::SM1, CountDownMonotonic, bank0::Gpio29>,
-        ),
+        keyglow:
+            KeypadLEDs<hal::pac::PIO0, hal::pio::SM1, CountDownMonotonic, bank0::Gpio29, SW_COUNT>,
     }
 
     #[local]
     struct Local {
-        debug_led: Pin<bank0::Gpio25, Output<Readable>>,
+        // debug_led: Pin<bank0::Gpio25, Output<Readable>>,
     }
 
     #[init(local = [TIMER: Option<hal::timer::Timer> = None, USB: Option<UsbBusAllocator<UsbBus>> = None,])]
@@ -100,6 +96,7 @@ mod app {
         let mut watchdog = Watchdog::new(ctx.device.WATCHDOG);
         watchdog.pause_on_debug(false);
 
+        // System Init
         let clocks = init_clocks_and_plls(
             12_000_000u32,
             ctx.device.XOSC,
@@ -120,7 +117,7 @@ mod app {
             &mut resets,
         );
 
-        // Matrix whoOhhoH -------------
+        // ------ KEYBOARD MATRIX -------
         // TODO maybe print err to defmt
         // TODO add `DynPin` to keyberon docs
         let mut matrix = DirectPinMatrix::new([[
@@ -138,46 +135,35 @@ mod app {
 
         // single layer for now
         let layout = Layout::new(&LAYERS);
-        let debouncer = Debouncer::new([[false, false]], [[false, false]], 10);
+        let debouncer = Debouncer::new([[false; SW_COUNT]], [[false; SW_COUNT]], 10);
 
-        // gpio2.into_pull_up_input().into();
+        // ------ LEDs -------
 
-        // Debug LEDs
-        // let green = pins.gpio16.into_readable_output();
-        // let red = pins.gpio17.into_readable_output();
-        let blue = pins.gpio25.into_readable_output();
+        // Status LED
+        // let blue = pins.gpio25.into_readable_output();
 
-        // neopixel
-        let mut pixel_power = pins.gpio11.into_push_pull_output();
-
-        pixel_power.set_high().ok();
-
+        // data pins
         let underglow_pin = pins.gpio28;
         let keyglow_pin = pins.gpio29;
 
         let (mut pio, sm0, sm1, _, _) = hal::pio::PIOExt::split(ctx.device.PIO0, &mut resets);
 
-        // LED
-        let underglow = (
-            [RGB8::new(0, 0, 0); 2],
-            Ws2812::new(
-                underglow_pin.into_mode(),
-                &mut pio,
-                sm0,
-                clocks.peripheral_clock.freq(),
-                CountDownMonotonic::new(60u64.micros()),
-            ),
-        );
-        let keyglow = (
-            [RGB8::new(0, 0, 0); 2],
-            Ws2812::new(
-                keyglow_pin.into_mode(),
-                &mut pio,
-                sm1,
-                clocks.peripheral_clock.freq(),
-                CountDownMonotonic::new(60u64.micros()),
-            ),
-        );
+        let underglow = KeypadLEDs::new_default(Ws2812::new(
+            underglow_pin.into_mode(),
+            &mut pio,
+            sm0,
+            clocks.peripheral_clock.freq(),
+            CountDownMonotonic::new(60u64.micros()),
+        ));
+        let keyglow = KeypadLEDs::new_default(Ws2812::new(
+            keyglow_pin.into_mode(),
+            &mut pio,
+            sm1,
+            clocks.peripheral_clock.freq(),
+            CountDownMonotonic::new(60u64.micros()),
+        ));
+
+        // ---- USB ----
 
         let usb_bus = UsbBusAllocator::new(UsbBus::new(
             ctx.device.USBCTRL_REGS,
@@ -226,7 +212,7 @@ mod app {
                 debouncer, // nb * update Hz?
                 watchdog,
             },
-            Local { debug_led: blue },
+            Local {},
             init::Monotonics(mono),
         )
     }
@@ -257,10 +243,6 @@ mod app {
 
             // underglow combine red and blue together
             // keyglow is per key color
-            let (u_colors, u_ws) = underglow;
-            let (k_colors, k_ws) = keyglow;
-
-            // let mut color = u_colors[0];
 
             // led things
             match &e {
@@ -268,12 +250,12 @@ mod app {
                     // info!("pressed key {}", k);
                     match k {
                         0 => {
-                            u_colors.iter_mut().for_each(|c| c.r = 255);
-                            k_colors[0].r = 255;
+                            underglow.write_all(|c| c.r = 255);
+                            keyglow.write_nth(0, |c| c.r = 255).ok();
                         }
                         1 => {
-                            u_colors.iter_mut().for_each(|c| c.b = 255);
-                            k_colors[1].b = 255;
+                            underglow.write_all(|c| c.b = 255);
+                            keyglow.write_nth(1, |c| c.b = 255).ok();
                         }
                         _ => (),
                     }
@@ -282,22 +264,20 @@ mod app {
                     // info!("released key {}", k);
                     match k {
                         0 => {
-                            u_colors.iter_mut().for_each(|c| c.r = 0);
-                            k_colors[0].r = 0;
+                            underglow.write_all(|c| c.r = 0);
+                            keyglow.write_nth(1, |c| c.r = 0).ok();
                         }
                         1 => {
-                            u_colors.iter_mut().for_each(|c| c.b = 0);
-                            k_colors[1].b = 0;
+                            underglow.write_all(|c| c.b = 0);
+                            keyglow.write_nth(1, |c| c.b = 0).ok();
                         }
                         _ => (),
                     }
                 }
             }
 
-            u_ws.write(brightness(u_colors.iter().copied(), 30))
-                .unwrap();
-            k_ws.write(brightness(k_colors.iter().copied(), 10))
-                .unwrap();
+            underglow.flush(30).ok();
+            keyglow.flush(10).ok();
         }
 
         let report: KbHidReport = layout.lock(|l| l.keycodes().collect());

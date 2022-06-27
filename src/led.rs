@@ -5,7 +5,8 @@ use rp2040_hal::{
     pio::{PIOExt, StateMachineIndex, UninitStateMachine, PIO},
 };
 use rp2040_monotonic::fugit::ExtU64;
-use smart_leds::SmartLedsWrite;
+use smart_leds::{SmartLedsWrite, RGB8};
+use switch_hal::OutputSwitch;
 use ws2812_pio::Ws2812Direct;
 
 pub struct CountDownMonotonic {
@@ -112,5 +113,98 @@ where
         let _ = nb::block!(self.cd.wait());
 
         self.driver.write(iterator)
+    }
+}
+
+pub struct KeypadLEDs<P, SM, C, I, const LENGTH: usize>
+where
+    I: PinId,
+    C: embedded_hal::timer::CountDown,
+    C::Time: From<rp2040_monotonic::fugit::TimerDurationU64<1_000_000>>,
+    P: PIOExt + FunctionConfig,
+    Function<P>: ValidPinMode<I>,
+    SM: StateMachineIndex,
+{
+    colors: [RGB8; LENGTH],
+    driver: Ws2812<P, SM, C, I>,
+    on: bool,
+}
+
+impl<P, SM, C, I, const L: usize> KeypadLEDs<P, SM, C, I, L>
+where
+    I: PinId,
+    C: embedded_hal::timer::CountDown,
+    C::Time: From<rp2040_monotonic::fugit::TimerDurationU64<1_000_000>>,
+    P: PIOExt + FunctionConfig,
+    Function<P>: ValidPinMode<I>,
+    SM: StateMachineIndex,
+{
+    pub fn new(colors: [RGB8; L], driver: Ws2812<P, SM, C, I>, on: bool) -> Self {
+        Self { colors, driver, on }
+    }
+    pub fn new_default(driver: Ws2812<P, SM, C, I>) -> Self {
+        Self::new([RGB8::new(0, 0, 0); L], driver, true)
+    }
+
+    pub fn write<T, J>(&mut self, iterator: T) -> Result<(), ()>
+    where
+        T: Iterator<Item = J>,
+        J: Into<<Ws2812<P, SM, C, I> as SmartLedsWrite>::Color>,
+    {
+        if self.on {
+            self.driver.write(iterator)
+        } else {
+            Err(())
+        }
+    }
+
+    pub fn write_nth(&mut self, n: usize, mut f: impl FnMut(&mut RGB8)) -> Result<(), ()> {
+        if let Some(c) = self.colors.iter_mut().nth(n) {
+            f(c);
+            Ok(())
+        } else {
+            Err(())
+        }
+    }
+
+    pub fn inner_mut(&mut self) -> (&mut [RGB8; L], &mut Ws2812<P, SM, C, I>) {
+        let Self { driver, colors, .. } = self;
+        (colors, driver)
+    }
+
+    pub fn nth(&mut self, n: usize) -> Option<RGB8> {
+        self.colors.iter().nth(n).copied()
+    }
+
+    pub fn write_all(&mut self, f: impl FnMut(&mut RGB8)) {
+        self.colors.iter_mut().for_each(f)
+    }
+
+    pub fn flush(&mut self, brightness: u8) -> Result<(), ()> {
+        self.driver.write(smart_leds::brightness(
+            self.colors.iter().copied(),
+            brightness,
+        ))
+    }
+}
+impl<P, SM, C, I, const L: usize> OutputSwitch for KeypadLEDs<P, SM, C, I, L>
+where
+    I: PinId,
+    C: embedded_hal::timer::CountDown,
+    C::Time: From<rp2040_monotonic::fugit::TimerDurationU64<1_000_000>>,
+    P: PIOExt + FunctionConfig,
+    Function<P>: ValidPinMode<I>,
+    SM: StateMachineIndex,
+{
+    type Error = ();
+
+    fn on(&mut self) -> Result<(), Self::Error> {
+        self.on = true;
+        self.driver.write(self.colors.iter().copied())
+    }
+
+    fn off(&mut self) -> Result<(), Self::Error> {
+        self.on = false;
+        self.driver.write([RGB8::new(0, 0, 0); L].iter().copied())
     }
 }
