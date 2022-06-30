@@ -1,11 +1,12 @@
 use crate::app::monotonics;
 
+use defmt::*;
 use rp2040_hal::{
     gpio::{Function, FunctionConfig, Pin, PinId, ValidPinMode},
     pio::{PIOExt, StateMachineIndex, UninitStateMachine, PIO},
 };
 use rp2040_monotonic::fugit::ExtU64;
-use smart_leds::{SmartLedsWrite, RGB8};
+use smart_leds::*;
 use switch_hal::OutputSwitch;
 use ws2812_pio::Ws2812Direct;
 
@@ -15,9 +16,9 @@ pub struct CountDownMonotonic {
 }
 
 impl CountDownMonotonic {
-    pub fn new(duration: rp2040_monotonic::fugit::TimerDurationU64<1_000_000>) -> Self {
+    pub fn new() -> Self {
         Self {
-            period: duration,
+            period: 0u64.millis(),
             next_end: None,
         }
     }
@@ -54,7 +55,7 @@ impl embedded_hal::timer::CountDown for CountDownMonotonic {
                 Err(nb::Error::WouldBlock)
             }
         } else {
-            panic!("CountDown is not running!");
+            defmt::panic!("Tried to wait on CountDown that wasnt started!");
         }
     }
 }
@@ -116,6 +117,29 @@ where
     }
 }
 
+impl<const L: usize, P, SM, C, I> defmt::Format for KeypadLEDs<P, SM, C, I, L>
+where
+    I: PinId,
+    C: embedded_hal::timer::CountDown,
+    C::Time: From<rp2040_monotonic::fugit::TimerDurationU64<1_000_000>>,
+    P: PIOExt + FunctionConfig,
+    Function<P>: ValidPinMode<I>,
+    SM: StateMachineIndex,
+{
+    fn format(&self, f: defmt::Formatter) {
+        if let Some(col) = self.colors {
+            defmt::write!(
+                f,
+                "LED_STRIP {{ PIN: {=?} LEDS: {=?} ON: {}, BRIGHTNESS: {} }} ",
+                I::DYN.num, // TODO: doesnt include group
+                col.map(|c| (c.r, c.g, c.b)),
+                self.on,
+                self.brightness,
+            )
+        }
+    }
+}
+
 pub struct KeypadLEDs<P, SM, C, I, const LENGTH: usize>
 where
     I: PinId,
@@ -125,8 +149,9 @@ where
     Function<P>: ValidPinMode<I>,
     SM: StateMachineIndex,
 {
-    colors: [RGB8; LENGTH],
-    driver: Ws2812<P, SM, C, I>,
+    pub colors: Option<[RGB8; LENGTH]>,
+    pub driver: Ws2812<P, SM, C, I>,
+    pub brightness: u8,
     on: bool,
 }
 
@@ -139,52 +164,93 @@ where
     Function<P>: ValidPinMode<I>,
     SM: StateMachineIndex,
 {
-    pub fn new(colors: [RGB8; L], driver: Ws2812<P, SM, C, I>, on: bool) -> Self {
-        Self { colors, driver, on }
+    // constructs LED string, not clearing any previous state (even when inserting a color)
+    pub fn new_explicit(
+        colors: [RGB8; L],
+        driver: Ws2812<P, SM, C, I>,
+        brightness: u8,
+        on: bool,
+    ) -> Self {
+        Self {
+            colors: Some(colors),
+            driver,
+            brightness,
+            on,
+        }
     }
-    pub fn new_default(driver: Ws2812<P, SM, C, I>) -> Self {
-        Self::new([RGB8::new(0, 0, 0); L], driver, true)
+    pub fn new(driver: Ws2812<P, SM, C, I>, brightness: u8) -> Self {
+        Self {
+            colors: None,
+            driver,
+            brightness,
+            on: true,
+        }
     }
 
-    pub fn write<T, J>(&mut self, iterator: T) -> Result<(), ()>
+    /// write to led driver, respects on/off
+    pub fn write<T>(&mut self, iterator: T) -> Result<(), ()>
     where
-        T: Iterator<Item = J>,
-        J: Into<<Ws2812<P, SM, C, I> as SmartLedsWrite>::Color>,
+        T: Iterator<Item = RGB8>,
     {
         if self.on {
-            self.driver.write(iterator)
+            self.write_raw(brightness(iterator, self.brightness))
         } else {
             Err(())
         }
     }
 
-    pub fn write_nth(&mut self, n: usize, mut f: impl FnMut(&mut RGB8)) -> Result<(), ()> {
-        if let Some(c) = self.colors.iter_mut().nth(n) {
+    /// write directly to led driver, not applying brightness or respecting on/off state
+    pub fn write_raw<T>(&mut self, iterator: T) -> Result<(), ()>
+    where
+        T: Iterator<Item = RGB8>,
+    {
+        self.driver.write(iterator)
+    }
+
+    /// write color to nth LED buffer
+    pub fn write_nth(&mut self, n: usize, mut f: impl FnMut(&mut RGB8)) {
+        if let Some(c) = self.colors().iter_mut().nth(n) {
             f(c);
-            Ok(())
         } else {
-            Err(())
+            error!(
+                "tried to write to nth LED {}, on a strip {} LEDs long",
+                n, L
+            );
         }
     }
 
-    pub fn inner_mut(&mut self) -> (&mut [RGB8; L], &mut Ws2812<P, SM, C, I>) {
-        let Self { driver, colors, .. } = self;
-        (colors, driver)
-    }
-
+    /// get nth buffered color
     pub fn nth(&mut self, n: usize) -> Option<RGB8> {
-        self.colors.iter().nth(n).copied()
+        self.colors().iter().nth(n).copied()
     }
 
+    /// write a color to each LED in strip
     pub fn write_all(&mut self, f: impl FnMut(&mut RGB8)) {
-        self.colors.iter_mut().for_each(f)
+        self.colors().iter_mut().for_each(f)
     }
 
-    pub fn flush(&mut self, brightness: u8) -> Result<(), ()> {
-        self.driver.write(smart_leds::brightness(
-            self.colors.iter().copied(),
-            brightness,
-        ))
+    /// flush buffered colors to the strip, logging errors to defmt
+    pub fn flush(&mut self) {
+        let colors = *self.colors();
+        if self.on {
+            trace!("{}", self);
+            self.write(colors.iter().copied())
+                .unwrap_or_else(|_| error!("failed to write colors to LED strip"))
+        }
+    }
+
+    /// gets currently set colors
+    /// if no colors were previously modified, colors will be reset
+    pub fn colors(&mut self) -> &mut [RGB8; L] {
+        self.colors.get_or_insert_with(|| {
+            let colors = [RGB8::new(0, 0, 0); L];
+            self.driver
+                .write(colors.iter().copied())
+                .unwrap_or_else(|_| {
+                    error!("failed writing colors to LED strip");
+                });
+            colors
+        })
     }
 }
 impl<P, SM, C, I, const L: usize> OutputSwitch for KeypadLEDs<P, SM, C, I, L>
@@ -200,11 +266,12 @@ where
 
     fn on(&mut self) -> Result<(), Self::Error> {
         self.on = true;
-        self.driver.write(self.colors.iter().copied())
+        let colors = *self.colors();
+        self.write_raw(brightness(colors.iter().copied(), self.brightness))
     }
 
     fn off(&mut self) -> Result<(), Self::Error> {
         self.on = false;
-        self.driver.write([RGB8::new(0, 0, 0); L].iter().copied())
+        self.write_raw([RGB8::new(0, 0, 0); L].iter().copied())
     }
 }

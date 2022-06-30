@@ -30,4 +30,9 @@ rustflags = [
 target = "thumbv6m-none-eabi"
 
 [env]
-DEFMT_LOG = "debug"
+# trace
+# debug
+# info
+# warn
+# error
+DEFMT_LOG = "trace"

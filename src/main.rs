@@ -91,7 +91,7 @@ mod app {
 
     #[init(local = [TIMER: Option<hal::timer::Timer> = None, USB: Option<UsbBusAllocator<UsbBus>> = None,])]
     fn init(ctx: init::Context) -> (Shared, Local, init::Monotonics) {
-        info!("init start");
+        debug!("init start");
         let mut resets = ctx.device.RESETS;
         let mut watchdog = Watchdog::new(ctx.device.WATCHDOG);
         watchdog.pause_on_debug(false);
@@ -148,20 +148,26 @@ mod app {
 
         let (mut pio, sm0, sm1, _, _) = hal::pio::PIOExt::split(ctx.device.PIO0, &mut resets);
 
-        let underglow = KeypadLEDs::new_default(Ws2812::new(
-            underglow_pin.into_mode(),
-            &mut pio,
-            sm0,
-            clocks.peripheral_clock.freq(),
-            CountDownMonotonic::new(60u64.micros()),
-        ));
-        let keyglow = KeypadLEDs::new_default(Ws2812::new(
-            keyglow_pin.into_mode(),
-            &mut pio,
-            sm1,
-            clocks.peripheral_clock.freq(),
-            CountDownMonotonic::new(60u64.micros()),
-        ));
+        let mut underglow = KeypadLEDs::new(
+            Ws2812::new(
+                underglow_pin.into_mode(),
+                &mut pio,
+                sm0,
+                clocks.peripheral_clock.freq(),
+                CountDownMonotonic::new(),
+            ),
+            30,
+        );
+        let mut keyglow = KeypadLEDs::new(
+            Ws2812::new(
+                keyglow_pin.into_mode(),
+                &mut pio,
+                sm1,
+                clocks.peripheral_clock.freq(),
+                CountDownMonotonic::new(),
+            ),
+            10,
+        );
 
         // ---- USB ----
 
@@ -187,16 +193,20 @@ mod app {
         .build();
 
         scan_timer_irq::spawn().ok();
+        // clear any previous state of the LEDs
+        // spawning this directly after kills things, hence delay (just microcontroller IO things)
+        flush_led::spawn_after(10u64.millis()).ok();
         // status_blinky::spawn().ok();
         // led_color_wheel::spawn().ok();
 
         // let mono = Systick::new(ctx.core.SYST, clocks.system_clock.freq().0);
         let mono = Rp2040Monotonic::new(ctx.device.TIMER);
 
-        info!("starting watchdog");
+        debug!("starting watchdog");
         watchdog.start(10_000.microseconds());
         watchdog.feed();
 
+        // should be 125 MHz
         info!(
             "init finished running at {} hz",
             embedded_time::fixed_point::FixedPoint::integer(&clocks.system_clock.freq())
@@ -228,56 +238,69 @@ mod app {
         });
     }
 
-    #[task(priority = 2, capacity = 8, shared = [usb_dev, usb_class, layout, underglow, keyglow])]
+    /// funnily enough, this has a priority higher than the USB IRQ
+    /// might need to change to avoid latentcy spikes (LED io takes a hot minute), but I'm lazy and dont want to lock things
+    #[task(priority = 2, shared = [underglow, keyglow])]
+    fn flush_led(c: flush_led::Context) {
+        c.shared.underglow.flush();
+        c.shared.keyglow.flush();
+    }
+
+    #[task(priority = 2, capacity = 8, shared = [usb_dev, usb_class, layout, underglow, keyglow], local = [counter: usize = 0])]
     fn handle_event(c: handle_event::Context, event: Option<Event>) {
-        let crate::app::handle_event::SharedResources {
+        let handle_event::Context { shared, local } = c;
+        let handle_event::SharedResources {
             mut layout,
             mut usb_dev,
             mut usb_class,
             underglow,
             keyglow,
-        } = c.shared;
+        } = shared;
 
         if let Some(e) = event {
+            *local.counter += 1;
+
             layout.lock(|l| l.event(e));
 
             // underglow combine red and blue together
             // keyglow is per key color
 
+            debug!(" = Event: {}", local.counter);
+
             // led things
             match &e {
                 Event::Press(_, k) => {
-                    // info!("pressed key {}", k);
+                    debug!("pressed key {}", k);
                     match k {
                         0 => {
                             underglow.write_all(|c| c.r = 255);
-                            keyglow.write_nth(0, |c| c.r = 255).ok();
+                            keyglow.write_nth(0, |c| c.r = 255);
                         }
                         1 => {
                             underglow.write_all(|c| c.b = 255);
-                            keyglow.write_nth(1, |c| c.b = 255).ok();
+                            keyglow.write_nth(1, |c| c.b = 255);
                         }
                         _ => (),
                     }
                 }
                 Event::Release(_, k) => {
-                    // info!("released key {}", k);
+                    debug!("released key {}", k);
                     match k {
                         0 => {
                             underglow.write_all(|c| c.r = 0);
-                            keyglow.write_nth(1, |c| c.r = 0).ok();
+                            keyglow.write_nth(0, |c| c.r = 0);
                         }
                         1 => {
                             underglow.write_all(|c| c.b = 0);
-                            keyglow.write_nth(1, |c| c.b = 0).ok();
+                            keyglow.write_nth(1, |c| c.b = 0);
                         }
                         _ => (),
                     }
                 }
             }
-
-            underglow.flush(30).ok();
-            keyglow.flush(10).ok();
+            // write to LEDs after USB things are finished
+            // same priority as this function
+            flush_led::spawn().unwrap_or_else(|_| error!("unable to spawn flush LED task"));
         }
 
         let report: KbHidReport = layout.lock(|l| l.keycodes().collect());
