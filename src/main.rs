@@ -24,9 +24,7 @@ mod app {
     use cortex_m::prelude::*;
     // use hal::prelude::*;
     use defmt::*;
-    use hal::gpio::bank0::Gpio12;
     use hal::rom_data::reset_to_usb_boot;
-    use hal::timer::CountDown;
     use hal::{
         clocks::{init_clocks_and_plls, Clock},
         gpio::*,
@@ -35,13 +33,11 @@ mod app {
         watchdog::Watchdog,
     };
 
-    use embedded_hal::digital::v2::{InputPin, OutputPin};
     use embedded_time::duration::units::*;
 
     use usb_device::class_prelude::*;
 
     use crate::led::Ws2812;
-    use smart_leds::{brightness, colors, SmartLedsWrite, RGB8};
 
     use keyberon::{
         debounce::Debouncer,
@@ -89,7 +85,7 @@ mod app {
         // debug_led: Pin<bank0::Gpio25, Output<Readable>>,
     }
 
-    #[init(local = [TIMER: Option<hal::timer::Timer> = None, USB: Option<UsbBusAllocator<UsbBus>> = None,])]
+    #[init(local = [USB: Option<UsbBusAllocator<UsbBus>> = None,])]
     fn init(ctx: init::Context) -> (Shared, Local, init::Monotonics) {
         debug!("init start");
         let mut resets = ctx.device.RESETS;
@@ -107,7 +103,7 @@ mod app {
             &mut watchdog,
         )
         .ok()
-        .unwrap();
+        .unwrap(); // panic if this fails, please.
 
         let sio = Sio::new(ctx.device.SIO);
         let pins = hal::gpio::Pins::new(
@@ -118,13 +114,12 @@ mod app {
         );
 
         // ------ KEYBOARD MATRIX -------
-        // TODO maybe print err to defmt
         // TODO add `DynPin` to keyberon docs
         let mut matrix = DirectPinMatrix::new([[
             Some(pins.gpio0.into_pull_up_input().into()),
             Some(pins.gpio1.into_pull_up_input().into()),
         ]])
-        .unwrap();
+        .unwrap(); // should't panic unless something is horribly wrong
 
         // ------ REBOOT SELECT -------
         // reboot into bootselect if both main buttons are held down under reset
@@ -133,16 +128,13 @@ mod app {
             reset_to_usb_boot(0, 0);
         }
 
-        // single layer for now
+        // ------ KEYBOARD LAYOUT -------
         let layout = Layout::new(&LAYERS);
         let debouncer = Debouncer::new([[false; SW_COUNT]], [[false; SW_COUNT]], 10);
 
         // ------ LEDs -------
 
-        // Status LED
-        // let blue = pins.gpio25.into_readable_output();
-
-        // data pins
+        // ws2812 data pins
         let underglow_pin = pins.gpio28;
         let keyglow_pin = pins.gpio29;
 
@@ -168,6 +160,9 @@ mod app {
             ),
             10,
         );
+
+        // Status LED
+        let blue = LED::new(pins.gpio25.into_readable_output(), LEDOnType::High);
 
         // ---- USB ----
 

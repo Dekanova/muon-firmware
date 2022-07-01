@@ -1,13 +1,18 @@
+use core::marker::PhantomData;
+
 use crate::app::monotonics;
 
 use defmt::*;
+use embedded_hal::digital::v2::{InputPin, OutputPin, StatefulOutputPin, ToggleableOutputPin};
 use rp2040_hal::{
-    gpio::{Function, FunctionConfig, Pin, PinId, ValidPinMode},
+    gpio::{
+        Function, FunctionConfig, OutputConfig, Pin, PinId, PinMode, ReadableOutput, ValidPinMode,
+    },
     pio::{PIOExt, StateMachineIndex, UninitStateMachine, PIO},
 };
 use rp2040_monotonic::fugit::ExtU64;
 use smart_leds::*;
-use switch_hal::OutputSwitch;
+use switch_hal::{OutputSwitch, ToggleableOutputSwitch};
 use ws2812_pio::Ws2812Direct;
 
 pub struct CountDownMonotonic {
@@ -273,5 +278,53 @@ where
     fn off(&mut self) -> Result<(), Self::Error> {
         self.on = false;
         self.write_raw([RGB8::new(0, 0, 0); L].iter().copied())
+    }
+}
+
+/// what type of LED, either
+pub enum LEDOnType {
+    High,
+    Low,
+}
+
+pub struct LED<I: PinId, LEDOnType> {
+    led: Pin<I, ReadableOutput>,
+    on_type: LEDOnType,
+}
+
+impl<I: PinId> LED<I, LEDOnType> {
+    pub fn new(pin: Pin<I, ReadableOutput>, on_type: LEDOnType) -> Self {
+        let mut out = Self { led: pin, on_type };
+        out.off().ok();
+        out
+    }
+}
+
+impl<I: PinId> ToggleableOutputSwitch for LED<I, LEDOnType> {
+    type Error = ();
+
+    fn toggle(&mut self) -> Result<(), Self::Error> {
+        self.led.toggle().unwrap();
+        Ok(())
+    }
+}
+
+impl<I: PinId> OutputSwitch for LED<I, LEDOnType> {
+    type Error = ();
+
+    fn on(&mut self) -> Result<(), Self::Error> {
+        match self.on_type {
+            LEDOnType::High => self.led.set_high().unwrap(),
+            LEDOnType::Low => self.led.set_low().unwrap(),
+        }
+        Ok(())
+    }
+
+    fn off(&mut self) -> Result<(), Self::Error> {
+        match self.on_type {
+            LEDOnType::High => self.led.set_low().unwrap(),
+            LEDOnType::Low => self.led.set_high().unwrap(),
+        }
+        Ok(())
     }
 }
