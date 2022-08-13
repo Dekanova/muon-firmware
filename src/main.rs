@@ -50,8 +50,8 @@ mod app {
     use crate::led::*;
 
     const TIMER_INTERVAL: u64 = 1_000;
-    const SW_COUNT: usize = 2;
-    const LAYERS: Layers<SW_COUNT, 1, 1> = layout! {{[Z X]}};
+    const SW_COUNT: usize = 3;
+    const LAYERS: Layers<SW_COUNT, 1, 1> = layout! {{[Z X C]}};
 
     use rp2040_monotonic::{fugit::*, *};
     // use systick_monotonic::*;
@@ -74,7 +74,7 @@ mod app {
         #[lock_free]
         watchdog: Watchdog,
         #[lock_free]
-        underglow: KeypadLEDs<hal::pac::PIO0, hal::pio::SM0, CountDownMonotonic, bank0::Gpio28, 2>,
+        underglow: KeypadLEDs<hal::pac::PIO0, hal::pio::SM0, CountDownMonotonic, bank0::Gpio22, 2>,
         #[lock_free]
         keyglow:
             KeypadLEDs<hal::pac::PIO0, hal::pio::SM1, CountDownMonotonic, bank0::Gpio29, SW_COUNT>,
@@ -82,7 +82,7 @@ mod app {
 
     #[local]
     struct Local {
-        // debug_led: Pin<bank0::Gpio25, Output<Readable>>,
+        status_led: crate::led::LED<bank0::Gpio11, crate::led::LEDOnType>,
     }
 
     #[init(local = [USB: Option<UsbBusAllocator<UsbBus>> = None,])]
@@ -113,18 +113,25 @@ mod app {
             &mut resets,
         );
 
+        // Status LED
+        let mut status_led = LED::new(pins.gpio11.into_readable_output(), LEDOnType::High);
+        use switch_hal::OutputSwitch;
+        // leave on to signal halt during init
+        status_led.on().ok();
+
         // ------ KEYBOARD MATRIX -------
         // TODO add `DynPin` to keyberon docs
         let mut matrix = DirectPinMatrix::new([[
-            Some(pins.gpio0.into_pull_up_input().into()),
-            Some(pins.gpio1.into_pull_up_input().into()),
+            Some(pins.gpio26.into_pull_up_input().into()),
+            Some(pins.gpio27.into_pull_up_input().into()),
+            Some(pins.gpio28.into_pull_up_input().into()),
         ]])
         .unwrap(); // should't panic unless something is horribly wrong
 
         // ------ REBOOT SELECT -------
-        // reboot into bootselect if both main buttons are held down under reset
+        // reboot into bootselect if left button is held down under reset
         let states = matrix.get().unwrap()[0];
-        if states[0] && states[1] {
+        if states[0] {
             reset_to_usb_boot(0, 0);
         }
 
@@ -135,7 +142,7 @@ mod app {
         // ------ LEDs -------
 
         // ws2812 data pins
-        let underglow_pin = pins.gpio28;
+        let underglow_pin = pins.gpio22;
         let keyglow_pin = pins.gpio29;
 
         let (mut pio, sm0, sm1, _, _) = hal::pio::PIOExt::split(ctx.device.PIO0, &mut resets);
@@ -160,9 +167,6 @@ mod app {
             ),
             10,
         );
-
-        // Status LED
-        let blue = LED::new(pins.gpio25.into_readable_output(), LEDOnType::High);
 
         // ---- USB ----
 
@@ -191,7 +195,7 @@ mod app {
         // clear any previous state of the LEDs
         // spawning this directly after kills things, hence delay (just microcontroller IO things)
         flush_led::spawn_after(10u64.millis()).ok();
-        // status_blinky::spawn().ok();
+        status_blinky::spawn().ok();
         // led_color_wheel::spawn().ok();
 
         // let mono = Systick::new(ctx.core.SYST, clocks.system_clock.freq().0);
@@ -217,7 +221,7 @@ mod app {
                 debouncer, // nb * update Hz?
                 watchdog,
             },
-            Local {},
+            Local { status_led },
             init::Monotonics(mono),
         )
     }
@@ -343,17 +347,14 @@ mod app {
     //     led_color_wheel::spawn_after(20.millis()).ok();
     // }
 
-    // #[task(priority = 1, local = [debug_led])]
-    // fn status_blinky(ctx: status_blinky::Context) {
-    //     let led = ctx.local.debug_led;
-    //     if led.is_high().unwrap() {
-    //         led.set_low().ok();
-    //     } else {
-    //         led.set_high().ok();
-    //     }
+    #[task(priority = 1, local = [status_led])]
+    fn status_blinky(ctx: status_blinky::Context) {
+        use switch_hal::ToggleableOutputSwitch;
+        let led = ctx.local.status_led;
+        led.toggle().ok();
 
-    //     status_blinky::spawn_after(1000u64.millis()).ok();
-    // }
+        status_blinky::spawn_after(1000u64.millis()).ok();
+    }
 }
 
 // /// Convert a number from `0..=255` to an RGB color triplet.
