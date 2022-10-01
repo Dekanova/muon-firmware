@@ -293,6 +293,27 @@ where
     }
 }
 
+impl<P, SM, C, I, const L: usize> ToggleableOutputSwitch for KeypadLEDs<P, SM, C, I, L>
+where
+    I: PinId,
+    C: embedded_hal::timer::CountDown,
+    C::Time: From<rp2040_monotonic::fugit::TimerDurationU64<1_000_000>>,
+    P: PIOExt + FunctionConfig,
+    Function<P>: ValidPinMode<I>,
+    SM: StateMachineIndex,
+{
+    type Error = ();
+
+    fn toggle(&mut self) -> Result<(), Self::Error> {
+        if self.on {
+            self.off();
+        } else {
+            self.on();
+        }
+        Ok(())
+    }
+}
+
 /// what type of LED, either
 pub enum LEDOnType {
     High,

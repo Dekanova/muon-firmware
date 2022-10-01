@@ -48,6 +48,7 @@ mod app {
         layout::{Event, *},
         matrix::DirectPinMatrix,
     };
+    use switch_hal::ToggleableOutputSwitch;
 
     use crate::kb::Leds;
     use crate::led::*;
@@ -59,12 +60,18 @@ mod app {
     pub enum FnAction {
         LED_Up,
         LED_Down,
-        What,
+        LED_Under_Toggle,
+        LED_Key_Toggle,
     }
-    const LAYERS: Layers<SW_COUNT, 2, 1, FnAction> = layout! {{
-        [Z X C]
-        [ {Action::Custom(FnAction::LED_Down)} {Action::Custom(FnAction::LED_Up)} n ]
-    }};
+    const LAYERS: Layers<SW_COUNT, 2, 2, FnAction> = layout! {{
+            [Z X C]
+            [ {Action::Custom(FnAction::LED_Down)} {Action::Custom(FnAction::LED_Up)} (1) ]
+        }
+        {
+            [n n n]
+            [ {Action::Custom(FnAction::LED_Key_Toggle)} {Action::Custom(FnAction::LED_Under_Toggle)} (0) ]
+        }
+    };
 
     use rp2040_monotonic::{fugit::*, *};
     // use systick_monotonic::*;
@@ -81,7 +88,7 @@ mod app {
         usb_class: keyberon::Class<'static, UsbBus, crate::kb::Leds>,
         #[lock_free]
         matrix: DirectPinMatrix<DynPin, SW_COUNT, 2>,
-        layout: Layout<SW_COUNT, 2, 1, FnAction>,
+        layout: Layout<SW_COUNT, 2, 2, FnAction>,
         #[lock_free]
         debouncer: Debouncer<[[bool; SW_COUNT]; 2]>,
         #[lock_free]
@@ -141,9 +148,9 @@ mod app {
                 Some(pins.gpio28.into_pull_up_input().into()),
             ],
             [
-                Some(pins.gpio23.into_pull_up_input().into()),
-                Some(pins.gpio24.into_pull_up_input().into()),
                 Some(pins.gpio25.into_pull_up_input().into()),
+                Some(pins.gpio24.into_pull_up_input().into()),
+                Some(pins.gpio23.into_pull_up_input().into()),
             ],
         ])
         .unwrap(); // should't panic unless something is horribly wrong
@@ -156,7 +163,7 @@ mod app {
 
         // ------ KEYBOARD LAYOUT -------
         let layout = Layout::new(&LAYERS);
-        let debouncer = Debouncer::new([[false; SW_COUNT]; 2], [[false; SW_COUNT]; 2], 10);
+        let debouncer = Debouncer::new([[false; SW_COUNT]; 2], [[false; SW_COUNT]; 2], 2);
 
         // ------ LEDs -------
 
@@ -198,7 +205,11 @@ mod app {
         ));
         let usb_bus = ctx.local.USB.insert(usb_bus);
 
-        let usb_class = keyberon::new_class(usb_bus, Leds);
+        let usb_class = keyberon::hid::HidClass::new_with_polling_interval(
+            keyberon::keyboard::Keyboard::new(Leds),
+            usb_bus,
+            1,
+        );
         let usb_dev = usb_device::device::UsbDeviceBuilder::new(
             usb_bus,
             // https://github.com/obdev/v-usb/blob/7a28fdc685952412dad2b8842429127bc1cf9fa7/usbdrv/USB-IDs-for-free.txt#L128
@@ -208,6 +219,7 @@ mod app {
         .manufacturer("Dekanova")
         .product("Muon")
         .serial_number(env!("CARGO_PKG_VERSION"))
+        .max_packet_size_0(64)
         .build();
 
         scan_timer_irq::spawn().ok();
@@ -275,7 +287,8 @@ mod app {
         match action {
             FnAction::LED_Down => keyglow.step_brightness(false),
             FnAction::LED_Up => keyglow.step_brightness(true),
-            FnAction::What => (),
+            FnAction::LED_Key_Toggle => keyglow.toggle().unwrap(),
+            FnAction::LED_Under_Toggle => underglow.toggle().unwrap(),
         }
     }
 
