@@ -24,6 +24,7 @@ mod app {
     use cortex_m::prelude::*;
     // use hal::prelude::*;
     use defmt::*;
+    use hal::gpio::DynPin;
     use hal::rom_data::reset_to_usb_boot;
     use hal::{
         clocks::{init_clocks_and_plls, Clock},
@@ -35,11 +36,13 @@ mod app {
 
     use embedded_time::duration::units::*;
 
+    use keyberon::layout::CustomEvent;
     use usb_device::class_prelude::*;
 
     use crate::led::Ws2812;
 
     use keyberon::{
+        action::Action,
         debounce::Debouncer,
         key_code::*,
         layout::{Event, *},
@@ -51,7 +54,17 @@ mod app {
 
     const TIMER_INTERVAL: u64 = 1_000;
     const SW_COUNT: usize = 3;
-    const LAYERS: Layers<SW_COUNT, 1, 1> = layout! {{[Z X C]}};
+
+    #[derive(Debug, Copy, Clone)]
+    pub enum FnAction {
+        LED_Up,
+        LED_Down,
+        What,
+    }
+    const LAYERS: Layers<SW_COUNT, 2, 1, FnAction> = layout! {{
+        [Z X C]
+        [ {Action::Custom(FnAction::LED_Down)} {Action::Custom(FnAction::LED_Up)} n ]
+    }};
 
     use rp2040_monotonic::{fugit::*, *};
     // use systick_monotonic::*;
@@ -67,10 +80,10 @@ mod app {
         usb_dev: usb_device::device::UsbDevice<'static, UsbBus>,
         usb_class: keyberon::Class<'static, UsbBus, crate::kb::Leds>,
         #[lock_free]
-        matrix: DirectPinMatrix<DynPin, SW_COUNT, 1>,
-        layout: Layout<SW_COUNT, 1, 1>,
+        matrix: DirectPinMatrix<DynPin, SW_COUNT, 2>,
+        layout: Layout<SW_COUNT, 2, 1, FnAction>,
         #[lock_free]
-        debouncer: Debouncer<[[bool; SW_COUNT]; 1]>,
+        debouncer: Debouncer<[[bool; SW_COUNT]; 2]>,
         #[lock_free]
         watchdog: Watchdog,
         #[lock_free]
@@ -121,23 +134,29 @@ mod app {
 
         // ------ KEYBOARD MATRIX -------
         // TODO add `DynPin` to keyberon docs
-        let mut matrix = DirectPinMatrix::new([[
-            Some(pins.gpio26.into_pull_up_input().into()),
-            Some(pins.gpio27.into_pull_up_input().into()),
-            Some(pins.gpio28.into_pull_up_input().into()),
-        ]])
+        let mut matrix = DirectPinMatrix::new([
+            [
+                Some(pins.gpio26.into_pull_up_input().into()),
+                Some(pins.gpio27.into_pull_up_input().into()),
+                Some(pins.gpio28.into_pull_up_input().into()),
+            ],
+            [
+                Some(pins.gpio23.into_pull_up_input().into()),
+                Some(pins.gpio24.into_pull_up_input().into()),
+                Some(pins.gpio25.into_pull_up_input().into()),
+            ],
+        ])
         .unwrap(); // should't panic unless something is horribly wrong
 
         // ------ REBOOT SELECT -------
         // reboot into bootselect if left button is held down under reset
-        let states = matrix.get().unwrap()[0];
-        if states[0] {
+        if matrix.get().unwrap()[1][0] {
             reset_to_usb_boot(0, 0);
         }
 
         // ------ KEYBOARD LAYOUT -------
         let layout = Layout::new(&LAYERS);
-        let debouncer = Debouncer::new([[false; SW_COUNT]], [[false; SW_COUNT]], 10);
+        let debouncer = Debouncer::new([[false; SW_COUNT]; 2], [[false; SW_COUNT]; 2], 10);
 
         // ------ LEDs -------
 
@@ -245,6 +264,21 @@ mod app {
         c.shared.keyglow.flush();
     }
 
+    #[task(priority = 2, shared = [layout, underglow, keyglow])]
+    fn handle_function_event(c: handle_function_event::Context, action: FnAction) {
+        let handle_function_event::SharedResources {
+            layout,
+            underglow,
+            keyglow,
+        } = c.shared;
+
+        match action {
+            FnAction::LED_Down => keyglow.step_brightness(false),
+            FnAction::LED_Up => keyglow.step_brightness(true),
+            FnAction::What => (),
+        }
+    }
+
     #[task(priority = 2, capacity = 8, shared = [usb_dev, usb_class, layout, underglow, keyglow], local = [counter: usize = 0])]
     fn handle_event(c: handle_event::Context, event: Option<Event>) {
         let handle_event::Context { shared, local } = c;
@@ -276,8 +310,12 @@ mod app {
                             keyglow.write_nth(0, |c| c.r = 255);
                         }
                         1 => {
+                            underglow.write_all(|c| c.g = 255);
+                            keyglow.write_nth(1, |c| c.g = 255);
+                        }
+                        2 => {
                             underglow.write_all(|c| c.b = 255);
-                            keyglow.write_nth(1, |c| c.b = 255);
+                            keyglow.write_nth(2, |c| c.b = 255);
                         }
                         _ => (),
                     }
@@ -290,12 +328,17 @@ mod app {
                             keyglow.write_nth(0, |c| c.r = 0);
                         }
                         1 => {
+                            underglow.write_all(|c| c.g = 0);
+                            keyglow.write_nth(1, |c| c.g = 0);
+                        }
+                        2 => {
                             underglow.write_all(|c| c.b = 0);
-                            keyglow.write_nth(1, |c| c.b = 0);
+                            keyglow.write_nth(2, |c| c.b = 0);
                         }
                         _ => (),
                     }
                 }
+                _ => (),
             }
             // write to LEDs after USB things are finished
             // same priority as this function
@@ -325,7 +368,11 @@ mod app {
 
         watchdog.feed();
 
-        layout.lock(|l| l.tick());
+        match layout.lock(|l| l.tick()) {
+            CustomEvent::Press(&p) => handle_function_event::spawn(p).unwrap(),
+            CustomEvent::Release(_) => (),
+            _ => (),
+        }
 
         for event in debouncer.events(matrix.get().unwrap()) {
             handle_event::spawn(Some(event)).unwrap();

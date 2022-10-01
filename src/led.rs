@@ -157,6 +157,7 @@ where
     pub colors: Option<[RGB8; LENGTH]>,
     pub driver: Ws2812<P, SM, C, I>,
     pub brightness: u8,
+    pub step_size: u8,
     on: bool,
 }
 
@@ -174,12 +175,14 @@ where
         colors: [RGB8; L],
         driver: Ws2812<P, SM, C, I>,
         brightness: u8,
+        step_size: u8,
         on: bool,
     ) -> Self {
         Self {
             colors: Some(colors),
             driver,
             brightness,
+            step_size,
             on,
         }
     }
@@ -188,6 +191,7 @@ where
             colors: None,
             driver,
             brightness,
+            step_size: 10,
             on: true,
         }
     }
@@ -204,6 +208,14 @@ where
         }
     }
 
+    pub fn step_brightness(&mut self, step_up: bool) {
+        if step_up {
+            self.brightness = self.brightness.saturating_add(self.step_size)
+        } else {
+            self.brightness = self.brightness.saturating_sub(self.step_size)
+        }
+    }
+
     /// write directly to led driver, not applying brightness or respecting on/off state
     pub fn write_raw<T>(&mut self, iterator: T) -> Result<(), ()>
     where
@@ -214,7 +226,7 @@ where
 
     /// write color to nth LED buffer
     pub fn write_nth(&mut self, n: usize, mut f: impl FnMut(&mut RGB8)) {
-        if let Some(c) = self.colors().iter_mut().nth(n) {
+        if let Some(c) = self.colors().iter_mut().rev().nth(n) {
             f(c);
         } else {
             error!(
