@@ -17,7 +17,7 @@ embedded-time = "0.12.1"
 defmt = "0.3.1"
 defmt-rtt = "0.3.2"
 panic-probe = { version = "0.3.0", features = ["print-defmt"] }
-# panic-halt = "*"
+panic-halt = "0.2.0"
 
 # TODO maybe make a BSP
 rp2040-hal = { version = "0.5.0", features = ["rt"] }

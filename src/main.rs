@@ -9,8 +9,8 @@
 pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 
 use defmt_rtt as _;
-use panic_probe as _;
-// use panic_halt as _;
+// use panic_probe as _;
+use panic_halt as _;
 
 use rp2040_hal as hal;
 
@@ -233,7 +233,7 @@ mod app {
         let mono = Rp2040Monotonic::new(ctx.device.TIMER);
 
         debug!("starting watchdog");
-        watchdog.start(10_000.microseconds());
+        watchdog.start(1_500.microseconds());
         watchdog.feed();
 
         // should be 125 MHz
