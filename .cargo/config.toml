@@ -6,8 +6,8 @@
 runner = "elf2uf2-rs -d"
 
 rustflags = [
-  "-C",
-  "linker=flip-link",
+  # "-C",
+  # "linker=flip-link",
   "-C",
   "link-arg=--nmagic",
   "-C",
