@@ -26,15 +26,17 @@ mod app {
     use defmt::*;
     use hal::gpio::DynPin;
     use hal::rom_data::reset_to_usb_boot;
+    use hal::Timer;
     use hal::{
         clocks::{init_clocks_and_plls, Clock},
         gpio::*,
         sio::Sio,
+        timer::{monotonic::Monotonic, Alarm0},
         usb::UsbBus,
         watchdog::Watchdog,
     };
 
-    use embedded_time::duration::units::*;
+    use fugit::{ExtU32, ExtU64};
 
     use keyberon::layout::CustomEvent;
     use usb_device::class_prelude::*;
@@ -73,14 +75,13 @@ mod app {
         }
     };
 
-    use rp2040_monotonic::{fugit::*, *};
     // use systick_monotonic::*;
 
     // #[monotonic(binds = SysTick, default = true)]
     // type MyMono = Systick<100>;
 
     #[monotonic(binds = TIMER_IRQ_0, default = true)]
-    type MyMono = Rp2040Monotonic;
+    type MyMono = Monotonic<Alarm0>;
 
     #[shared]
     struct Shared {
@@ -230,16 +231,18 @@ mod app {
         // led_color_wheel::spawn().ok();
 
         // let mono = Systick::new(ctx.core.SYST, clocks.system_clock.freq().0);
-        let mono = Rp2040Monotonic::new(ctx.device.TIMER);
+        let mut t = Timer::new(ctx.device.TIMER, &mut resets);
+        let a0 = t.alarm_0().unwrap();
+        let mono = Monotonic::new(t, a0);
 
         debug!("starting watchdog");
-        watchdog.start(1_500.microseconds());
+        watchdog.start(1_500u32.micros());
         watchdog.feed();
 
         // should be 125 MHz
         info!(
             "init finished running at {} hz",
-            embedded_time::fixed_point::FixedPoint::integer(&clocks.system_clock.freq())
+            &clocks.system_clock.freq().raw()
         );
         (
             Shared {

@@ -4,20 +4,20 @@ use crate::app::monotonics;
 
 use defmt::*;
 use embedded_hal::digital::v2::{InputPin, OutputPin, StatefulOutputPin, ToggleableOutputPin};
+use fugit::{ExtU64, TimerDurationU64};
 use rp2040_hal::{
     gpio::{
         Function, FunctionConfig, OutputConfig, Pin, PinId, PinMode, ReadableOutput, ValidPinMode,
     },
     pio::{PIOExt, StateMachineIndex, UninitStateMachine, PIO},
 };
-use rp2040_monotonic::fugit::ExtU64;
 use smart_leds::*;
 use switch_hal::{OutputSwitch, ToggleableOutputSwitch};
 use ws2812_pio::Ws2812Direct;
 
 pub struct CountDownMonotonic {
-    period: rp2040_monotonic::fugit::TimerDurationU64<1_000_000>,
-    next_end: Option<rp2040_monotonic::fugit::TimerInstantU64<1_000_000>>,
+    period: fugit::TimerDurationU64<1_000_000>,
+    next_end: Option<fugit::TimerInstantU64<1_000_000>>,
 }
 
 impl CountDownMonotonic {
@@ -31,7 +31,7 @@ impl CountDownMonotonic {
 
 impl embedded_hal::timer::CountDown for CountDownMonotonic {
     /// The unit of time used by this timer
-    type Time = rp2040_monotonic::fugit::TimerDurationU64<1_000_000>;
+    type Time = fugit::TimerDurationU64<1_000_000>;
 
     /// Starts a new count down
     fn start<T>(&mut self, count: T)
@@ -90,7 +90,7 @@ where
         pin: Pin<I, Function<P>>,
         pio: &mut PIO<P>,
         sm: UninitStateMachine<(P, SM)>,
-        clock_freq: embedded_time::rate::Hertz,
+        clock_freq: fugit::HertzU32,
         cd: C,
     ) -> Ws2812<P, SM, C, I> {
         let driver = Ws2812Direct::new(pin, pio, sm, clock_freq);
@@ -103,7 +103,7 @@ impl<P, SM, C, I> SmartLedsWrite for Ws2812<P, SM, C, I>
 where
     I: PinId,
     C: embedded_hal::timer::CountDown,
-    C::Time: From<rp2040_monotonic::fugit::TimerDurationU64<1_000_000>>,
+    C::Time: From<fugit::TimerDurationU64<1_000_000>>,
     P: PIOExt + FunctionConfig,
     Function<P>: ValidPinMode<I>,
     SM: StateMachineIndex,
@@ -126,7 +126,7 @@ impl<const L: usize, P, SM, C, I> defmt::Format for KeypadLEDs<P, SM, C, I, L>
 where
     I: PinId,
     C: embedded_hal::timer::CountDown,
-    C::Time: From<rp2040_monotonic::fugit::TimerDurationU64<1_000_000>>,
+    C::Time: From<fugit::TimerDurationU64<1_000_000>>,
     P: PIOExt + FunctionConfig,
     Function<P>: ValidPinMode<I>,
     SM: StateMachineIndex,
@@ -149,7 +149,7 @@ pub struct KeypadLEDs<P, SM, C, I, const LENGTH: usize>
 where
     I: PinId,
     C: embedded_hal::timer::CountDown,
-    C::Time: From<rp2040_monotonic::fugit::TimerDurationU64<1_000_000>>,
+    C::Time: From<TimerDurationU64<1_000_000>>,
     P: PIOExt + FunctionConfig,
     Function<P>: ValidPinMode<I>,
     SM: StateMachineIndex,
@@ -165,7 +165,7 @@ impl<P, SM, C, I, const L: usize> KeypadLEDs<P, SM, C, I, L>
 where
     I: PinId,
     C: embedded_hal::timer::CountDown,
-    C::Time: From<rp2040_monotonic::fugit::TimerDurationU64<1_000_000>>,
+    C::Time: From<fugit::TimerDurationU64<1_000_000>>,
     P: PIOExt + FunctionConfig,
     Function<P>: ValidPinMode<I>,
     SM: StateMachineIndex,
@@ -274,7 +274,7 @@ impl<P, SM, C, I, const L: usize> OutputSwitch for KeypadLEDs<P, SM, C, I, L>
 where
     I: PinId,
     C: embedded_hal::timer::CountDown,
-    C::Time: From<rp2040_monotonic::fugit::TimerDurationU64<1_000_000>>,
+    C::Time: From<fugit::TimerDurationU64<1_000_000>>,
     P: PIOExt + FunctionConfig,
     Function<P>: ValidPinMode<I>,
     SM: StateMachineIndex,
@@ -297,7 +297,7 @@ impl<P, SM, C, I, const L: usize> ToggleableOutputSwitch for KeypadLEDs<P, SM, C
 where
     I: PinId,
     C: embedded_hal::timer::CountDown,
-    C::Time: From<rp2040_monotonic::fugit::TimerDurationU64<1_000_000>>,
+    C::Time: From<fugit::TimerDurationU64<1_000_000>>,
     P: PIOExt + FunctionConfig,
     Function<P>: ValidPinMode<I>,
     SM: StateMachineIndex,

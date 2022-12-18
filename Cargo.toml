@@ -9,7 +9,6 @@ resolver = "2"
 [dependencies]
 cortex-m = "0.7.4"
 cortex-m-rtic = "1.0.0"
-rp2040-monotonic = "1.0.1"
 # systick-monotonic = "1.0.0"
 embedded-hal = { version = "0.2.7", features = ["unproven"] }
 embedded-time = "0.12.1"
@@ -20,15 +19,16 @@ panic-probe = { version = "0.3.0", features = ["print-defmt"] }
 panic-halt = "0.2.0"
 
 # TODO maybe make a BSP
-rp2040-hal = { version = "0.5.0", features = ["rt"] }
+rp2040-hal = { version = "0.7.0", features = ["rt", "rtic-monotonic"] }
 rp2040-boot2 = "0.2.0"
+fugit = "*"
 
 usb-device = "0.2.8"
 usbd-hid = "0.6.0"
 # TODO find out why the new release isnt published
 keyberon = { git = "https://github.com/TeXitoi/keyberon", rev = "03542891e9fac096b72bf45316992d20b39ba335" }
 
-ws2812-pio = "0.3.0"
+ws2812-pio = "0.5.0"
 smart-leds = "0.3.0"
 smart-leds-trait = "0.2"
 switch-hal = "0.4.0"
