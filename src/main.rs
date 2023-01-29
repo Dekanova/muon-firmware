@@ -4,26 +4,43 @@
 #![no_std]
 #![no_main]
 
+#[cfg(feature = "release")]
+#[link_section = ".boot2"]
+#[used]
+pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_RAM_MEMCPY;
+
+#[cfg(not(feature = "release"))]
 #[link_section = ".boot2"]
 #[used]
 pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 
-use defmt_rtt as _;
-// use panic_probe as _;
+#[cfg(feature = "release")]
 use panic_halt as _;
+#[cfg(not(feature = "release"))]
+use {defmt_rtt as _, panic_probe as _};
 
 use rp2040_hal as hal;
 
+mod config;
+mod flash;
 mod kb;
 mod led;
+
+// /// Core 1 of RP2040 will take care of all the LED stuff
+// static mut CORE1_STACK: Stack<4096> = Stack::new();
 
 // TODO https://crates.io/crates/switch-hal
 #[rtic::app(device = crate::hal::pac, peripherals = true, dispatchers = [PIO0_IRQ_0, PIO0_IRQ_1])] // extra PIO0_IRQ_1, PIO1_IRQ_0
 mod app {
+    #[cfg(not(feature = "release"))]
+    use defmt::*;
+    use usbd_hid::descriptor::KeyboardReport;
+    use usbd_hid::hid_class::HidClassSettings;
+
+    use crate::flash::{ConfigStorage, Ready, Uninitialized};
     use crate::hal;
     use cortex_m::prelude::*;
     // use hal::prelude::*;
-    use defmt::*;
     use hal::gpio::DynPin;
     use hal::rom_data::reset_to_usb_boot;
     use hal::Timer;
@@ -50,6 +67,7 @@ mod app {
         layout::{Event, *},
         matrix::DirectPinMatrix,
     };
+
     use switch_hal::ToggleableOutputSwitch;
 
     use crate::kb::Leds;
@@ -99,6 +117,7 @@ mod app {
         #[lock_free]
         keyglow:
             KeypadLEDs<hal::pac::PIO0, hal::pio::SM1, CountDownMonotonic, bank0::Gpio29, SW_COUNT>,
+        config: ConfigStorage<'static>,
     }
 
     #[local]
@@ -106,9 +125,14 @@ mod app {
         status_led: crate::led::LED<bank0::Gpio11, crate::led::LEDOnType>,
     }
 
-    #[init(local = [USB: Option<UsbBusAllocator<UsbBus>> = None,])]
+    #[init(local = [USB: Option<UsbBusAllocator<UsbBus>> = None, BUF: [u8; 4096] = [0u8; 4096]])]
     fn init(ctx: init::Context) -> (Shared, Local, init::Monotonics) {
+        #[cfg(not(feature = "release"))]
         debug!("init start");
+        // unsafe {
+        //     // Release spinlocks since they are not freed on soft reset
+        //     hal::sio::spinlock_reset();
+        // }
         let mut resets = ctx.device.RESETS;
         let mut watchdog = Watchdog::new(ctx.device.WATCHDOG);
         watchdog.pause_on_debug(false);
@@ -206,6 +230,23 @@ mod app {
         ));
         let usb_bus = ctx.local.USB.insert(usb_bus);
 
+        let hid_class = {
+            use usbd_hid::*;
+
+            let settings = HidClassSettings {
+                protocol: hid_class::HidProtocol::Keyboard,
+                config: hid_class::ProtocolModeConfig::DefaultBehavior,
+                locale: hid_class::HidCountryCode::NotSupported,
+                subclass: hid_class::HidSubClass::NoSubClass,
+            };
+            usbd_hid::hid_class::HIDClass::new_with_settings(
+                usb_bus,
+                <KeyboardReport as descriptor::SerializedDescriptor>::desc(),
+                1,
+                settings,
+            )
+        };
+
         let usb_class = keyberon::hid::HidClass::new_with_polling_interval(
             keyberon::keyboard::Keyboard::new(Leds),
             usb_bus,
@@ -223,6 +264,28 @@ mod app {
         .max_packet_size_0(64)
         .build();
 
+        // ---- Storage ----
+
+        let mut config = ConfigStorage::new(ctx.local.BUF);
+        config.init().unwrap();
+
+        {
+            #[derive(minicbor::Decode, minicbor::Encode)]
+            struct Foo {
+                #[n(0)]
+                a: u32,
+                #[n(1)]
+                b: f32,
+            }
+            let k = "heybbgirl";
+            // add or do nothing if already there
+            config.add_enc::<123>(k, Foo { a: 0, b: 3.1415 }).ok();
+
+            let f: Foo = config.get_dec(k, &mut [0; 123]).unwrap();
+        }
+
+        // ---- Finish ----
+
         scan_timer_irq::spawn().ok();
         // clear any previous state of the LEDs
         // spawning this directly after kills things, hence delay (just microcontroller IO things)
@@ -235,11 +298,21 @@ mod app {
         let a0 = t.alarm_0().unwrap();
         let mono = Monotonic::new(t, a0);
 
+        #[cfg(not(feature = "release"))]
         debug!("starting watchdog");
-        watchdog.start(1_500u32.micros());
-        watchdog.feed();
+        // watchdog.start(1_500u32.micros());
+        // watchdog.feed();
+
+        // --- Config ---
+        // let config = config.setup();
+        // cfg_t::spawn_after(500u64.millis()).unwrap();
+        // let config = config
+        //     .init()
+        //     .map_err(|_| error!("failed to init config storage"))
+        //     .unwrap();
 
         // should be 125 MHz
+        #[cfg(not(feature = "release"))]
         info!(
             "init finished running at {} hz",
             &clocks.system_clock.freq().raw()
@@ -254,6 +327,7 @@ mod app {
                 layout,
                 debouncer, // nb * update Hz?
                 watchdog,
+                config,
             },
             Local { status_led },
             init::Monotonics(mono),
@@ -314,11 +388,15 @@ mod app {
             // underglow combine red and blue together
             // keyglow is per key color
 
+            cfg_t::spawn().unwrap();
+
+            #[cfg(not(feature = "release"))]
             debug!(" = Event: {}", local.counter);
 
             // led things
             match &e {
                 Event::Press(_, k) => {
+                    #[cfg(not(feature = "release"))]
                     debug!("pressed key {}", k);
                     match k {
                         0 => {
@@ -337,6 +415,7 @@ mod app {
                     }
                 }
                 Event::Release(_, k) => {
+                    #[cfg(not(feature = "release"))]
                     debug!("released key {}", k);
                     match k {
                         0 => {
@@ -358,7 +437,12 @@ mod app {
             }
             // write to LEDs after USB things are finished
             // same priority as this function
-            flush_led::spawn().unwrap_or_else(|_| error!("unable to spawn flush LED task"));
+            flush_led::spawn().unwrap_or_else(|_| {
+                #[cfg(not(feature = "release"))]
+                error!("unable to spawn flush LED task");
+                #[cfg(feature = "release")]
+                ()
+            });
         }
 
         let report: KbHidReport = layout.lock(|l| l.keycodes().collect());
@@ -417,6 +501,27 @@ mod app {
         led.toggle().ok();
 
         status_blinky::spawn_after(1000u64.millis()).ok();
+    }
+
+    #[task(priority = 1, shared = [config], local = [first: bool = true])]
+    fn cfg_t(mut ctx: cfg_t::Context) {
+        debug!("config setup task started");
+        ctx.shared.config.lock(|c| {
+            // if *ctx.local.first {
+            //     c.add("color", &[0]).unwrap();
+            // }
+            let prev = c.get::<1>("color").unwrap()[0];
+            debug!("prev color was {}", prev);
+            c.remove("color").unwrap(); // need to remove before re-write ig
+            c.add("color", &[prev + 1]).unwrap();
+            debug!("new color is {}", prev + 1);
+        });
+
+        *ctx.local.first = false;
+
+        // led.toggle().ok();
+
+        // cfg_t::spawn_after(1000u64.millis()).ok();
     }
 }
 

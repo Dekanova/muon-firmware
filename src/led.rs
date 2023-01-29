@@ -1,14 +1,10 @@
-use core::marker::PhantomData;
-
 use crate::app::monotonics;
 
 use defmt::*;
-use embedded_hal::digital::v2::{InputPin, OutputPin, StatefulOutputPin, ToggleableOutputPin};
+use embedded_hal::digital::v2::{OutputPin, ToggleableOutputPin};
 use fugit::{ExtU64, TimerDurationU64};
 use rp2040_hal::{
-    gpio::{
-        Function, FunctionConfig, OutputConfig, Pin, PinId, PinMode, ReadableOutput, ValidPinMode,
-    },
+    gpio::{Function, FunctionConfig, Pin, PinId, ReadableOutput, ValidPinMode},
     pio::{PIOExt, StateMachineIndex, UninitStateMachine, PIO},
 };
 use smart_leds::*;
@@ -18,6 +14,23 @@ use ws2812_pio::Ws2812Direct;
 pub struct CountDownMonotonic {
     period: fugit::TimerDurationU64<1_000_000>,
     next_end: Option<fugit::TimerInstantU64<1_000_000>>,
+}
+
+mod config {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Serialize, Deserialize)]
+    struct LedConfig {
+        r: f32,
+        g: f32,
+        b: f32,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct PadConfig {
+        keys: [LedConfig; 3],
+        underglow: [LedConfig; 2],
+    }
 }
 
 impl CountDownMonotonic {
@@ -65,6 +78,13 @@ impl embedded_hal::timer::CountDown for CountDownMonotonic {
     }
 }
 
+enum LightingMode<const LENGTH: usize> {
+    ///
+    Reactive([RGB8; LENGTH], u32),
+    ReactiveSplash([RGB8; LENGTH], [RGB8; LENGTH], u32, u32),
+    Static([RGB8; LENGTH], u32),
+}
+
 pub struct Ws2812<P, SM, C, I>
 where
     I: PinId,
@@ -74,7 +94,7 @@ where
     SM: StateMachineIndex,
 {
     driver: Ws2812Direct<P, SM, I>,
-    cd: C,
+    count_down: C,
 }
 
 impl<P, SM, C, I> Ws2812<P, SM, C, I>
@@ -95,7 +115,10 @@ where
     ) -> Ws2812<P, SM, C, I> {
         let driver = Ws2812Direct::new(pin, pio, sm, clock_freq);
 
-        Self { driver, cd }
+        Self {
+            driver,
+            count_down: cd,
+        }
     }
 }
 
@@ -115,8 +138,8 @@ where
         T: Iterator<Item = J>,
         J: Into<Self::Color>,
     {
-        self.cd.start(60.micros());
-        let _ = nb::block!(self.cd.wait());
+        self.count_down.start(60.micros());
+        let _ = nb::block!(self.count_down.wait());
 
         self.driver.write(iterator)
     }
