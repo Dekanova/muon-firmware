@@ -34,11 +34,13 @@ mod led;
 mod app {
     #[cfg(not(feature = "release"))]
     use defmt::*;
+    use once_cell::unsync::Lazy;
+    use openinput_rust::keyboard::OiKeyboardInputReport;
     use usbd_hid::descriptor::KeyboardReport;
-    use usbd_hid::hid_class::HidClassSettings;
+    use usbd_hid::hid_class::{HIDClass, HidClassSettings};
 
     use crate::flash::{ConfigStorage, Ready, Uninitialized};
-    use crate::hal;
+    use crate::{hal, kb};
     use cortex_m::prelude::*;
     // use hal::prelude::*;
     use hal::gpio::DynPin;
@@ -57,6 +59,7 @@ mod app {
 
     use keyberon::layout::CustomEvent;
     use usb_device::class_prelude::*;
+    use usbd_hid::descriptor::SerializedDescriptor;
 
     use crate::led::Ws2812;
 
@@ -67,10 +70,10 @@ mod app {
         layout::{Event, *},
         matrix::DirectPinMatrix,
     };
+    use openinput_rust::OpenInputHidReport;
 
     use switch_hal::ToggleableOutputSwitch;
 
-    use crate::kb::Leds;
     use crate::led::*;
 
     const TIMER_INTERVAL: u64 = 1_000;
@@ -104,7 +107,7 @@ mod app {
     #[shared]
     struct Shared {
         usb_dev: usb_device::device::UsbDevice<'static, UsbBus>,
-        usb_class: keyberon::Class<'static, UsbBus, crate::kb::Leds>,
+        hid_class: kb::OpenInputKeyboardHID<'static, UsbBus>,
         #[lock_free]
         matrix: DirectPinMatrix<DynPin, SW_COUNT, 2>,
         layout: Layout<SW_COUNT, 2, 2, FnAction>,
@@ -239,19 +242,16 @@ mod app {
                 locale: hid_class::HidCountryCode::NotSupported,
                 subclass: hid_class::HidSubClass::NoSubClass,
             };
-            usbd_hid::hid_class::HIDClass::new_with_settings(
+            let hid = usbd_hid::hid_class::HIDClass::new_with_settings(
                 usb_bus,
-                <KeyboardReport as descriptor::SerializedDescriptor>::desc(),
+                KeyboardReport::desc(),
                 1,
                 settings,
-            )
+            );
+
+            kb::OpenInputKeyboardHID::new(hid)
         };
 
-        let usb_class = keyberon::hid::HidClass::new_with_polling_interval(
-            keyberon::keyboard::Keyboard::new(Leds),
-            usb_bus,
-            1,
-        );
         let usb_dev = usb_device::device::UsbDeviceBuilder::new(
             usb_bus,
             // https://github.com/obdev/v-usb/blob/7a28fdc685952412dad2b8842429127bc1cf9fa7/usbdrv/USB-IDs-for-free.txt#L128
@@ -320,7 +320,7 @@ mod app {
         (
             Shared {
                 usb_dev,
-                usb_class,
+                hid_class,
                 matrix,
                 underglow,
                 keyglow,
@@ -334,11 +334,12 @@ mod app {
         )
     }
 
-    #[task(binds = USBCTRL_IRQ, priority = 3, shared = [usb_dev, usb_class])]
+    #[task(binds = USBCTRL_IRQ, priority = 3, shared = [usb_dev, hid_class])]
     fn usb_rx(c: usb_rx::Context) {
         let usb = c.shared.usb_dev;
-        let kb = c.shared.usb_class;
-        (usb, kb).lock(|usb, kb| {
+        let kb = c.shared.hid_class;
+        (usb, kb).lock(|usb, hid| {
+            let kb = &mut hid.inner;
             if usb.poll(&mut [kb]) {
                 kb.poll();
             }
@@ -369,13 +370,13 @@ mod app {
         }
     }
 
-    #[task(priority = 2, capacity = 8, shared = [usb_dev, usb_class, layout, underglow, keyglow], local = [counter: usize = 0])]
+    #[task(priority = 2, capacity = 8, shared = [usb_dev, hid_class, layout, underglow, keyglow], local = [counter: usize = 0, kb: Lazy<OiKeyboardInputReport<'static>> = Lazy::new(|| OiKeyboardInputReport::Keyboard(kb::keyboard::KeyboardInputReport::default()))], )]
     fn handle_event(c: handle_event::Context, event: Option<Event>) {
         let handle_event::Context { shared, local } = c;
         let handle_event::SharedResources {
             mut layout,
             mut usb_dev,
-            mut usb_class,
+            mut hid_class,
             underglow,
             keyglow,
         } = shared;
@@ -388,10 +389,7 @@ mod app {
             // underglow combine red and blue together
             // keyglow is per key color
 
-            cfg_t::spawn().unwrap();
-
-            #[cfg(not(feature = "release"))]
-            debug!(" = Event: {}", local.counter);
+            // cfg_t::spawn().unwrap();
 
             // led things
             match &e {
@@ -446,13 +444,35 @@ mod app {
         }
 
         let report: KbHidReport = layout.lock(|l| l.keycodes().collect());
-        if !usb_class.lock(|k| k.device_mut().set_keyboard_report(report.clone())) {
+        let report = report.as_bytes();
+
+        // hacky conversion between types
+        let kb_report =
+            kb::keyboard::OiKeyboardInputReport::Keyboard(kb::keyboard::KeyboardInputReport {
+                modifier: report[0],
+                reserved: 0,
+                keycodes: report[2..].try_into().unwrap(),
+            });
+
+        // hack to see if it changed
+        // skip writing if unmodified
+        if Lazy::force(local.kb) == &kb_report {
             return;
         }
+        *Lazy::force_mut(local.kb) = kb_report.clone();
+
         if usb_dev.lock(|d| d.state()) != usb_device::device::UsbDeviceState::Configured {
             return;
         }
-        while let Ok(0) = usb_class.lock(|k| k.write(report.as_bytes())) {}
+
+        let oi = kb::OiReport::new_short(0xff, 0xff, &[0; 5]);
+        let oi_n = kb::keyboard::OiKeyboardInputReport::OpenInput(oi);
+
+        while let Ok(()) = hid_class.lock(|kb::OpenInputKeyboardHID { inner, report }| {
+            // TODO
+            // report.push_report(inner, oi_n.clone())
+            report.push_report(inner, kb_report.clone())
+        }) {}
     }
 
     #[task(priority = 1, shared = [matrix, layout, debouncer, watchdog])]
