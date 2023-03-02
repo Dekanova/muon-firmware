@@ -157,8 +157,8 @@ mod app {
         .unwrap(); // should't panic unless something is horribly wrong
 
         // ------ REBOOT SELECT -------
-        // reboot into bootselect if left button is held down under reset
-        if matrix.get().unwrap()[1][0] {
+        // reboot into bootselect if left key is held down under reset
+        if matrix.get().unwrap()[0][0] {
             reset_to_usb_boot(0, 0);
         }
 
