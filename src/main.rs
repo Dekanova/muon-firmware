@@ -67,7 +67,7 @@ mod app {
     }
     const LAYERS: Layers<SW_COUNT, 2, 2, FnAction> = layout! {{
             [Z X C]
-            [ {Action::Custom(FnAction::LED_Down)} {Action::Custom(FnAction::LED_Up)} (1) ]
+            [ Grave Escape (1) ]
         }
         {
             [n n n]
